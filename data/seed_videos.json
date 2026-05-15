@@ -1,0 +1,122 @@
+[
+  {
+    "video_id": 1,
+    "title": "Solo Leveling Ep 1 - Thợ săn yếu nhất",
+    "description": "Sung Jin-woo, thợ săn hạng E yếu nhất, bước vào dungeon bí ẩn và nhận được sức mạnh đặc biệt giúp anh trở nên mạnh nhất.",
+    "tags": ["action", "fantasy", "zero-to-hero", "dungeon"]
+  },
+  {
+    "video_id": 2,
+    "title": "Horimiya Ep 1 - Bí mật sau giờ học",
+    "description": "Câu chuyện tình cảm học đường nhẹ nhàng giữa Hori và Miyamura, hai người mang hai bộ mặt khác nhau ở trường và ngoài đời.",
+    "tags": ["romance", "school", "slice-of-life"]
+  },
+  {
+    "video_id": 3,
+    "title": "Attack on Titan Ep 1 - Ngày Titan tấn công",
+    "description": "Nhân loại sống trong các bức tường khổng lồ để tránh Titan. Khi bức tường bị phá vỡ, Eren thề sẽ tiêu diệt tất cả Titan.",
+    "tags": ["action", "dark", "war", "survival"]
+  },
+  {
+    "video_id": 4,
+    "title": "Sword Art Online Ep 1 - Thế giới ảo chết chóc",
+    "description": "Kirito bị mắc kẹt trong game thực tế ảo nơi nếu chết trong game sẽ chết ngoài đời thật. Anh cùng Asuna chiến đấu để thoát ra.",
+    "tags": ["action", "romance", "game", "adventure"]
+  },
+  {
+    "video_id": 5,
+    "title": "Mushoku Tensei Ep 1 - Khởi đầu mới",
+    "description": "Một người đàn ông thất bại được tái sinh vào thế giới fantasy với trí nhớ nguyên vẹn, quyết tâm sống cuộc đời mới có ý nghĩa.",
+    "tags": ["fantasy", "romance", "adventure", "isekai"]
+  },
+  {
+    "video_id": 6,
+    "title": "Doraemon - Mèo máy đến từ tương lai",
+    "description": "Doraemon, chú mèo máy đến từ tương lai với túi bảo bối thần kỳ, giúp đỡ cậu bé Nobita trong cuộc sống hàng ngày.",
+    "tags": ["comedy", "kids", "sci-fi", "adventure"]
+  },
+  {
+    "video_id": 7,
+    "title": "Demon Slayer Ep 1 - Tàn sát",
+    "description": "Tanjiro trở về nhà chỉ để thấy gia đình bị quỷ tàn sát, chỉ còn em gái Nezuko sống sót nhưng đã biến thành quỷ.",
+    "tags": ["action", "dark", "supernatural", "family"]
+  },
+  {
+    "video_id": 8,
+    "title": "Spy x Family Ep 1 - Chiến dịch Strix",
+    "description": "Điệp viên Twilight phải xây dựng gia đình giả để thực hiện nhiệm vụ. Anh nhận nuôi Anya, cô bé đọc được suy nghĩ người khác.",
+    "tags": ["comedy", "action", "family", "spy"]
+  },
+  {
+    "video_id": 9,
+    "title": "Your Name - Tên cậu là gì",
+    "description": "Taki và Mitsuha bí ẩn hoán đổi cơ thể qua giấc mơ. Câu chuyện tình yêu xuyên không gian và thời gian đầy cảm xúc.",
+    "tags": ["romance", "drama", "supernatural", "movie"]
+  },
+  {
+    "video_id": 10,
+    "title": "One Punch Man Ep 1 - Anh hùng sở thích",
+    "description": "Saitama là anh hùng mạnh nhất có thể đánh bại mọi kẻ thù chỉ với một cú đấm, nhưng anh lại chán nản vì không có đối thủ xứng tầm.",
+    "tags": ["action", "comedy", "superhero", "parody"]
+  },
+  {
+    "video_id": 11,
+    "title": "Jujutsu Kaisen Ep 1 - Lời nguyền",
+    "description": "Yuji Itadori nuốt ngón tay của Vua Lời Nguyền Sukuna và bước vào thế giới của các pháp sư diệt trừ lời nguyền.",
+    "tags": ["action", "dark", "supernatural", "school"]
+  },
+  {
+    "video_id": 12,
+    "title": "Tower of God Ep 1 - Bước vào tháp",
+    "description": "Bam bước vào Tháp Thần bí ẩn để tìm lại Rachel, người bạn duy nhất. Anh phải vượt qua các thử thách chết chóc trên từng tầng.",
+    "tags": ["action", "fantasy", "adventure", "mystery"]
+  },
+  {
+    "video_id": 13,
+    "title": "Vinland Saga Ep 1 - Chiến binh Viking",
+    "description": "Thorfinn, con trai một chiến binh Viking vĩ đại, theo đuổi kẻ thù giết cha mình qua những cuộc chiến tranh đẫm máu.",
+    "tags": ["action", "dark", "historical", "revenge"]
+  },
+  {
+    "video_id": 14,
+    "title": "Frieren Ep 1 - Sau cuộc hành trình",
+    "description": "Frieren, pháp sư tiên tộc sống hàng ngàn năm, nhìn lại cuộc hành trình 10 năm cùng đồng đội và bắt đầu hiểu ý nghĩa của con người.",
+    "tags": ["fantasy", "drama", "adventure", "slice-of-life"]
+  },
+  {
+    "video_id": 15,
+    "title": "Naruto Ep 1 - Cậu bé cáo chín đuôi",
+    "description": "Naruto Uzumaki, cậu bé bị cả làng xa lánh vì phong ấn cáo chín đuôi, mơ ước trở thành Hokage được mọi người công nhận.",
+    "tags": ["action", "adventure", "ninja", "friendship"]
+  },
+  {
+    "video_id": 16,
+    "title": "Death Note Ep 1 - Cuốn sổ tử thần",
+    "description": "Light Yagami nhặt được cuốn sổ có khả năng giết người chỉ bằng cách viết tên. Anh quyết định dùng nó để tạo ra thế giới mới.",
+    "tags": ["thriller", "dark", "psychological", "crime"]
+  },
+  {
+    "video_id": 17,
+    "title": "My Hero Academia Ep 1 - Anh hùng",
+    "description": "Izuku Midoriya sinh ra không có siêu năng lực trong thế giới nơi 80% người có năng lực. Anh vẫn mơ ước trở thành anh hùng vĩ đại nhất.",
+    "tags": ["action", "superhero", "school", "zero-to-hero"]
+  },
+  {
+    "video_id": 18,
+    "title": "Crayon Shin-chan - Cậu bé bút chì",
+    "description": "Shin-chan, cậu bé 5 tuổi tinh nghịch và hài hước, cùng gia đình và bạn bè tạo nên những tình huống dở khóc dở cười.",
+    "tags": ["comedy", "kids", "family", "slice-of-life"]
+  },
+  {
+    "video_id": 19,
+    "title": "Berserk - Chiến binh đen",
+    "description": "Guts, chiến binh cầm kiếm khổng lồ, chiến đấu chống lại quỷ dữ trong hành trình đen tối đầy bạo lực và bi kịch.",
+    "tags": ["action", "dark", "gore", "fantasy"]
+  },
+  {
+    "video_id": 20,
+    "title": "Kaguya-sama Love is War - Cuộc chiến tỏ tình",
+    "description": "Chủ tịch hội học sinh Shirogane và phó chủ tịch Kaguya đều thích nhau nhưng không ai chịu tỏ tình trước, tạo nên cuộc chiến trí tuệ hài hước.",
+    "tags": ["romance", "comedy", "school", "psychological"]
+  }
+]
