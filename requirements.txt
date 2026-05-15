@@ -1,0 +1,27 @@
+# Web Framework
+fastapi==0.115.12
+uvicorn==0.34.3
+
+# Validation (tự động có khi cài fastapi, nhưng pin version cho chắc)
+pydantic==2.11.3
+
+# Google Gemini LLM
+google-genai==1.20.0
+
+# Embedding Model (text → vector)
+sentence-transformers==4.1.0
+
+# Vector Database
+chromadb==1.0.7
+
+# Environment variables (.env)
+python-dotenv==1.1.0
+
+# Logging
+loguru==0.7.3
+
+# Rate Limiting
+slowapi==0.1.9
+
+# Sanitize HTML input
+bleach==6.2.0
