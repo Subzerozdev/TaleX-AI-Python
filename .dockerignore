@@ -1,0 +1,28 @@
+# Git
+.git
+.gitignore
+
+# Python cache
+__pycache__
+*.py[cod]
+*.egg-info
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Local data (sẽ mount volume khi chạy container)
+chroma_data/
+logs/
+
+# Environment (truyền qua --env-file khi docker run)
+.env
+
+# IDE
+.idea/
+.vscode/
+
+# Docs
+*.md
+docs/
