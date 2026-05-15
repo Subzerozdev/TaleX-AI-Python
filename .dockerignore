@@ -23,6 +23,8 @@ logs/
 .idea/
 .vscode/
 
-# Docs
-*.md
+# Docs (giữ README.md)
 docs/
+
+# Docker
+docker-compose.yml

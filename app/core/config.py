@@ -39,6 +39,17 @@ class Settings:
     # Chat history
     MAX_HISTORY_MESSAGES: int = 20
 
+    # Milvus (Vector DB cho Content ID fingerprint)
+    MILVUS_HOST: str = os.getenv("MILVUS_HOST", "localhost")
+    MILVUS_PORT: int = int(os.getenv("MILVUS_PORT", "19530"))
+
+    # Fingerprint
+    FINGERPRINT_FPS: int = int(os.getenv("FINGERPRINT_FPS", "1"))
+    FINGERPRINT_SIMILARITY_THRESHOLD: float = float(os.getenv("FINGERPRINT_SIMILARITY_THRESHOLD", "0.85"))
+    FINGERPRINT_MIN_MATCH_SECONDS: int = int(os.getenv("FINGERPRINT_MIN_MATCH_SECONDS", "5"))
+    FINGERPRINT_MAX_GAP_SECONDS: int = int(os.getenv("FINGERPRINT_MAX_GAP_SECONDS", "2"))
+    FINGERPRINT_MAX_FILE_SIZE_MB: int = int(os.getenv("FINGERPRINT_MAX_FILE_SIZE_MB", "100"))
+
 
 # Singleton — toàn app dùng chung 1 instance
 settings = Settings()

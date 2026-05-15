@@ -1,0 +1,50 @@
+# Docker Compose cho TaleX AI Service
+# Chạy: docker-compose up --build
+# Dừng: docker-compose down
+# Logs: docker-compose logs -f
+
+services:
+  # === Container 1: Python AI App ===
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      # Mount source code → sửa code không cần rebuild
+      - .:/app
+      # Giữ ChromaDB data khi restart
+      - chroma_data:/app/chroma_data
+      # Giữ logs
+      - app_logs:/app/logs
+    depends_on:
+      milvus:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # === Container 2: Milvus Vector Database ===
+  milvus:
+    image: milvusdb/milvus:v2.5.10
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    environment:
+      ETCD_USE_EMBED: "true"
+      ETCD_DATA_DIR: "/var/lib/milvus/etcd"
+      COMMON_STORAGETYPE: "local"
+    volumes:
+      - milvus_data:/var/lib/milvus
+    command: ["milvus", "run", "standalone"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  chroma_data:
+  app_logs:
+  milvus_data:

@@ -18,9 +18,10 @@ from slowapi.errors import RateLimitExceeded
 from app.core.error_handler import register_error_handlers
 from app.core.logging_config import setup_logging
 from app.core.rate_limiter import limiter
+from app.fingerprint import milvus_store
 from app.llm import gemini_client
 from app.rag import embeddings, vector_store
-from app.routers import chat, content, health, moderation, search, sync
+from app.routers import chat, content, fingerprint, health, moderation, search, sync
 
 
 @asynccontextmanager
@@ -42,7 +43,10 @@ async def lifespan(application: FastAPI):
     # 3. Khởi tạo Gemini client
     gemini_client.init_gemini()
 
-    # 4. Seed data nếu ChromaDB rỗng
+    # 4. Khởi tạo Milvus (Content ID)
+    milvus_store.init_milvus()
+
+    # 5. Seed data nếu ChromaDB rỗng
     if vector_store.get_video_count() == 0:
         _seed_data()
 
@@ -110,3 +114,4 @@ app.include_router(sync.router)
 app.include_router(chat.router)
 app.include_router(content.router)
 app.include_router(moderation.router)
+app.include_router(fingerprint.router)
