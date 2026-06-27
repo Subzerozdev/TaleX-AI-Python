@@ -59,7 +59,7 @@ def _create_collection() -> None:
 
     fields = [
         FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
-        FieldSchema(name="media_id", dtype=DataType.INT64),
+        FieldSchema(name="media_id", dtype=DataType.VARCHAR, max_length=50),
         FieldSchema(name="timestamp", dtype=DataType.FLOAT),
         FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=VECTOR_DIM),
     ]
@@ -86,7 +86,7 @@ def get_collection() -> Collection:
     return _collection
 
 
-def insert_fingerprints(media_id: int, fingerprints: list[dict]) -> int:
+def insert_fingerprints(media_id: str, fingerprints: list[dict]) -> int:
     """
     Lưu fingerprints của 1 video/ảnh vào Milvus.
 
@@ -146,11 +146,11 @@ def search_similar(vectors: list[list[float]], top_k: int = 5) -> list[dict]:
     return matches
 
 
-def delete_by_media_id(media_id: int) -> int:
+def delete_by_media_id(media_id: str) -> int:
     """Xóa tất cả vectors của 1 video."""
     collection = get_collection()
 
-    expr = f"media_id == {media_id}"
+    expr = f'media_id == "{media_id}"'
     result = collection.delete(expr)
     collection.flush()
 

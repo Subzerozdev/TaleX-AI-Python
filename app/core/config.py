@@ -50,6 +50,24 @@ class Settings:
     FINGERPRINT_MAX_GAP_SECONDS: int = int(os.getenv("FINGERPRINT_MAX_GAP_SECONDS", "2"))
     FINGERPRINT_MAX_FILE_SIZE_MB: int = int(os.getenv("FINGERPRINT_MAX_FILE_SIZE_MB", "100"))
 
+    # Kafka (Aiven)
+    KAFKA_BOOTSTRAP_SERVERS: str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "")
+    KAFKA_SSL_CAFILE: str = os.getenv("KAFKA_SSL_CAFILE", "")
+    KAFKA_SSL_CERTFILE: str = os.getenv("KAFKA_SSL_CERTFILE", "")
+    KAFKA_SSL_KEYFILE: str = os.getenv("KAFKA_SSL_KEYFILE", "")
+    KAFKA_CONSUMER_GROUP: str = os.getenv("KAFKA_CONSUMER_GROUP", "python-content-pipeline-group")
+
+    # AWS S3 + Rekognition
+    AWS_ACCESS_KEY_ID: str = os.getenv("AWS_ACCESS_KEY_ID", "")
+    AWS_SECRET_ACCESS_KEY: str = os.getenv("AWS_SECRET_ACCESS_KEY", "")
+    AWS_REGION: str = os.getenv("AWS_REGION", "ap-southeast-1")
+    AWS_S3_BUCKET: str = os.getenv("AWS_S3_BUCKET", "talex-media-139139347126")
+
+    # Rekognition Content Moderation
+    REKOGNITION_CONFIDENCE_THRESHOLD: float = float(os.getenv("REKOGNITION_CONFIDENCE_THRESHOLD", "80.0"))
+    REKOGNITION_MAX_FRAMES: int = int(os.getenv("REKOGNITION_MAX_FRAMES", "30"))
+    MODERATION_FRAME_INTERVAL: float = float(os.getenv("MODERATION_FRAME_INTERVAL", "2.0"))
+
 
 # Singleton — toàn app dùng chung 1 instance
 settings = Settings()

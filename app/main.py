@@ -6,6 +6,7 @@ Chạy: uvicorn app.main:app --reload
 Swagger UI: http://localhost:8000/docs
 """
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -19,6 +20,8 @@ from app.core.error_handler import register_error_handlers
 from app.core.logging_config import setup_logging
 from app.core.rate_limiter import limiter
 from app.fingerprint import milvus_store
+from app.kafka.kafka_consumer_service import consume_loop
+from app.kafka.kafka_producer_service import start_producer, stop_producer
 from app.llm import gemini_client
 from app.rag import embeddings, vector_store
 from app.routers import chat, content, fingerprint, health, moderation, search, sync
@@ -50,12 +53,18 @@ async def lifespan(application: FastAPI):
     if vector_store.get_video_count() == 0:
         _seed_data()
 
+    # 6. Kafka producer + consumer (content pipeline)
+    await start_producer()
+    consumer_task = asyncio.create_task(consume_loop())
+
     logger.info("TaleX AI Service ready!")
 
     yield  # app chạy ở đây
 
     # === SHUTDOWN ===
     logger.info("Shutting down TaleX AI Service...")
+    consumer_task.cancel()
+    await stop_producer()
 
 
 def _seed_data():

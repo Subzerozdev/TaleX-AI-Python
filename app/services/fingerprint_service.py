@@ -41,7 +41,7 @@ ALLOWED_EXTENSIONS = VIDEO_EXTENSIONS | IMAGE_EXTENSIONS
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
 
 
-def process_fingerprint(media_id: int, file_bytes: bytes, filename: str) -> FingerprintResponse:
+def process_fingerprint(media_id: str, file_bytes: bytes, filename: str) -> FingerprintResponse:
     """
     Xử lý fingerprint cho 1 video/ảnh.
 
@@ -81,7 +81,7 @@ def process_fingerprint(media_id: int, file_bytes: bytes, filename: str) -> Fing
     insert_fingerprints(media_id, fingerprints)
 
     # Tạo Content ID
-    content_id = f"CID-{media_id:06d}"
+    content_id = f"CID-{media_id}"
 
     # Tính overall similarity
     overall_similarity = 0.0
@@ -106,12 +106,12 @@ def process_fingerprint(media_id: int, file_bytes: bytes, filename: str) -> Fing
     return response
 
 
-def get_fingerprint_info(media_id: int) -> FingerprintInfo:
+def get_fingerprint_info(media_id: str) -> FingerprintInfo:
     """Lấy thông tin fingerprint đã lưu."""
     if not is_connected():
         raise RuntimeError("Milvus chưa sẵn sàng.")
 
-    content_id = f"CID-{media_id:06d}"
+    content_id = f"CID-{media_id}"
 
     # Đếm số vectors của media_id này (query Milvus)
     # Dùng get_count tổng vì Milvus không có count by filter đơn giản
@@ -124,7 +124,7 @@ def get_fingerprint_info(media_id: int) -> FingerprintInfo:
     )
 
 
-def delete_fingerprint(media_id: int) -> DeleteResponse:
+def delete_fingerprint(media_id: str) -> DeleteResponse:
     """Xóa tất cả fingerprints của 1 media."""
     if not is_connected():
         raise RuntimeError("Milvus chưa sẵn sàng.")
@@ -173,7 +173,7 @@ def _process_image(file_bytes: bytes) -> list[dict]:
     return [{"timestamp": 0.0, "vector": vector}]
 
 
-def _find_violations(fingerprints: list[dict], exclude_media_id: int) -> list[dict]:
+def _find_violations(fingerprints: list[dict], exclude_media_id: str) -> list[dict]:
     """Tìm đoạn trùng trong Milvus."""
     if not fingerprints:
         return []

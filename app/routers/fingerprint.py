@@ -24,7 +24,7 @@ router = APIRouter(prefix="/api/v1", tags=["Fingerprint"])
 @limiter.limit("5/minute")
 async def process(
     request: Request,
-    media_id: int = Form(gt=0, description="ID video/ảnh"),
+    media_id: str = Form(description="ID video/ảnh (UUID từ Spring Boot)"),
     file: UploadFile = File(description="File video hoặc ảnh"),
 ):
     """
@@ -42,12 +42,12 @@ async def process(
 
 
 @router.get("/fingerprint/{media_id}", response_model=FingerprintInfo)
-def get_info(media_id: int):
+def get_info(media_id: str):
     """Xem thông tin fingerprint đã lưu."""
     return get_fingerprint_info(media_id)
 
 
 @router.delete("/fingerprint/{media_id}", response_model=DeleteResponse)
-def delete(media_id: int):
+def delete(media_id: str):
     """Xóa tất cả fingerprints của 1 video/ảnh."""
     return delete_fingerprint(media_id)

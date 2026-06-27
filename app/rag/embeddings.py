@@ -30,7 +30,7 @@ def load_model() -> SentenceTransformer:
 
     logger.info(f"Loading embedding model: {_MODEL_NAME}...")
     _model = SentenceTransformer(_MODEL_NAME)
-    logger.info(f"Embedding model loaded. Dimension: {_model.get_embedding_dimension()}")
+    logger.info(f"Embedding model loaded. Dimension: {_model.get_sentence_embedding_dimension()}")
 
     return _model
 
