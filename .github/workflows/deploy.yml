@@ -1,0 +1,75 @@
+name: Deploy AI Service to VPS
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          command_timeout: 30m
+          script: |
+            cd ~/TaleX-AI-Python || git clone ${{ secrets.REPO_URL }} ~/TaleX-AI-Python && cd ~/TaleX-AI-Python
+            git pull origin main
+
+            # Create .env from GitHub Secrets
+            cat > .env << ENVEOF
+            GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+            GEMINI_MODEL=${{ secrets.GEMINI_MODEL }}
+            APP_HOST=0.0.0.0
+            APP_PORT=8000
+            CHROMA_PERSIST_DIR=./chroma_data
+            RATE_LIMIT_CHAT=10/minute
+            RATE_LIMIT_SEARCH=30/minute
+            MILVUS_HOST=milvus
+            MILVUS_PORT=19530
+            FINGERPRINT_FPS=1
+            FINGERPRINT_SIMILARITY_THRESHOLD=0.85
+            FINGERPRINT_MIN_MATCH_SECONDS=5
+            KAFKA_BOOTSTRAP_SERVERS=${{ secrets.KAFKA_BOOTSTRAP_SERVERS }}
+            KAFKA_CONSUMER_GROUP=python-content-pipeline-group
+            KAFKA_SSL_CAFILE=/app/certs/ca.pem
+            KAFKA_SSL_CERTFILE=/app/certs/service.cert
+            KAFKA_SSL_KEYFILE=/app/certs/service.key
+            KAFKA_CA_CERT=${{ secrets.KAFKA_CA_CERT }}
+            KAFKA_ACCESS_CERT=${{ secrets.KAFKA_ACCESS_CERT }}
+            KAFKA_ACCESS_KEY=${{ secrets.KAFKA_ACCESS_KEY }}
+            AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+            AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+            AWS_REGION=${{ secrets.AWS_REGION }}
+            AWS_S3_BUCKET=${{ secrets.AWS_S3_BUCKET }}
+            REKOGNITION_CONFIDENCE_THRESHOLD=80.0
+            REKOGNITION_MAX_FRAMES=30
+            MODERATION_FRAME_INTERVAL=2.0
+            ENVEOF
+
+            sed -i 's/^[[:space:]]*//' .env
+
+            # Cleanup old images
+            docker image prune -af --filter "until=48h" 2>/dev/null || true
+
+            # Build and start
+            COMPOSE_DOCKER_CLI_BUILD=1 DOCKER_BUILDKIT=1 \
+              docker compose up --build -d
+
+            # Post-build cleanup
+            docker image prune -f 2>/dev/null || true
+
+            # Health check — wait up to 120s
+            echo "Waiting for AI service health check..."
+            for i in $(seq 1 24); do
+              if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+                echo "AI service is healthy after $((i*5))s!"
+                exit 0
+              fi
+              sleep 5
+            done
+            echo "WARNING: AI service health check failed after 120s"
