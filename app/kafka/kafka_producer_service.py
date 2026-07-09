@@ -7,8 +7,7 @@ from aiokafka import AIOKafkaProducer
 from loguru import logger
 
 from app.core.config import settings
-from app.kafka.kafka_config import TOPIC_COPYRIGHT_RESULT, TOPIC_MODERATION_RESULT
-
+from app.kafka.kafka_config import TOPIC_COPYRIGHT_RESULT, TOPIC_MODERATION_RESULT, TOPIC_RECOMMENDATION_RESULT
 _producer: AIOKafkaProducer | None = None
 
 
@@ -71,3 +70,16 @@ async def send_moderation_result(media_id: str, result: dict):
         return
     await _producer.send_and_wait(TOPIC_MODERATION_RESULT, key=media_id, value=result)
     logger.info(f"Moderation result sent: mediaId={media_id}")
+
+
+async def send_recommendation_result(series_id: str, similar_ids: list[str]):
+    """Send recommendation result to Spring Boot."""
+    if _producer is None:
+        logger.warning("Kafka producer not available, skipping send")
+        return
+    result = {
+        "seriesId": series_id,
+        "similarIds": similar_ids
+    }
+    await _producer.send_and_wait(TOPIC_RECOMMENDATION_RESULT, key=series_id, value=result)
+    logger.info(f"Recommendation result sent: seriesId={series_id}")

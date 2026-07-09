@@ -9,11 +9,12 @@ from loguru import logger
 
 from app.aws.s3_client import download_from_s3
 from app.core.config import settings
-from app.kafka.kafka_config import TOPIC_PIPELINE_JOB, TOPIC_MODERATION_JOB
+from app.kafka.kafka_config import TOPIC_PIPELINE_JOB, TOPIC_MODERATION_JOB, TOPIC_RECOMMENDATION_SYNC
 from app.kafka.kafka_producer_service import send_copyright_result, send_moderation_result
 from app.schemas.kafka_messages import PipelineJobMessage
 from app.services.fingerprint_service import process_fingerprint
 from app.services.video_moderation_service import moderate_media
+from app.services.recommendation_service import process_series_upsert
 
 
 def _build_ssl_context() -> ssl.SSLContext | None:
@@ -41,14 +42,15 @@ async def consume_loop():
         "value_deserializer": lambda v: json.loads(v.decode("utf-8")),
         "auto_offset_reset": "earliest",
         "enable_auto_commit": True,
+        "max_poll_interval_ms": 300000,
     }
     if ssl_ctx:
         kwargs["security_protocol"] = "SSL"
         kwargs["ssl_context"] = ssl_ctx
 
-    consumer = AIOKafkaConsumer(TOPIC_PIPELINE_JOB, TOPIC_MODERATION_JOB, **kwargs)
+    consumer = AIOKafkaConsumer(TOPIC_PIPELINE_JOB, TOPIC_MODERATION_JOB, TOPIC_RECOMMENDATION_SYNC, **kwargs)
     await consumer.start()
-    logger.info(f"Kafka consumer started — listening on [{TOPIC_PIPELINE_JOB}, {TOPIC_MODERATION_JOB}]")
+    logger.info(f"Kafka consumer started — listening on [{TOPIC_PIPELINE_JOB}, {TOPIC_MODERATION_JOB}, {TOPIC_RECOMMENDATION_SYNC}]")
 
     try:
         async for msg in consumer:
@@ -57,6 +59,8 @@ async def consume_loop():
                     await _process_pipeline_job(msg.value)
                 elif msg.topic == TOPIC_MODERATION_JOB:
                     await _process_moderation_job(msg.value)
+                elif msg.topic == TOPIC_RECOMMENDATION_SYNC:
+                    await _process_debezium_series(msg.value)
             except Exception as e:
                 logger.error(f"Job processing failed (topic={msg.topic}): {e}", exc_info=True)
     finally:
@@ -118,6 +122,47 @@ async def _process_pipeline_job(data: dict):
             "errorMessage": str(e),
         }
         await send_copyright_result(job.media_id, error_result)
+
+
+async def _process_debezium_series(data: dict):
+    """
+    Process Debezium CDC event for public.series table.
+    Expects data in standard Debezium format.
+    """
+    try:
+        # Some Debezium configs have 'payload', some don't (schemas.enable=false)
+        payload = data.get("payload", data)
+        
+        op = payload.get("op", "u")  # default to update if not present
+        
+        # Debezium places the new row data in 'after'
+        after = payload.get("after")
+        if op not in ["c", "u", "r"]:
+            logger.info(f"Ignored op {op}")
+            return
+            
+        after = payload.get("after")
+        if not after:
+            logger.info("Ignored: no after data")
+            return
+            
+        series_id = after.get("series_id") or after.get("id")
+        title = after.get("title", "")
+        description = after.get("description", "")
+        
+        # Since Debezium only listens to the series table, we don't have tags/categories here.
+        # If needed, the AI app could fetch them via REST from the Backend.
+        categories = []
+        tags = []
+        
+        import asyncio
+        similar_ids = await asyncio.to_thread(process_series_upsert, str(series_id), title, description, categories, tags)
+        
+        from app.kafka.kafka_producer_service import send_recommendation_result
+        await send_recommendation_result(str(series_id), similar_ids)
+            
+    except Exception as e:
+        logger.error(f"Failed to process Debezium series event: {e}", exc_info=True)
 
 
 async def _process_moderation_job(data: dict):

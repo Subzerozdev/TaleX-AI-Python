@@ -48,6 +48,8 @@ async def lifespan(application: FastAPI):
 
     # 4. Khởi tạo Milvus (Content ID)
     milvus_store.init_milvus()
+    from app.rag.milvus_recommendation_store import init_recommendation_milvus
+    init_recommendation_milvus()
 
     # 5. Seed data nếu ChromaDB rỗng
     if vector_store.get_video_count() == 0:
