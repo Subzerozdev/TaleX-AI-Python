@@ -150,13 +150,17 @@ async def _process_debezium_series(data: dict):
         title = after.get("title", "")
         description = after.get("description", "")
         
-        # Since Debezium only listens to the series table, we don't have tags/categories here.
-        # If needed, the AI app could fetch them via REST from the Backend.
-        categories = []
-        tags = []
+        # Fetch enriched metadata from MongoDB
+        from app.db.mongodb import get_series_metadata
+        metadata = await get_series_metadata(str(series_id))
+        
+        categories = metadata.get("category", [])
+        tags = metadata.get("tags", [])
+        age_rating = metadata.get("ageRating", "")
+        language = metadata.get("language", "")
         
         import asyncio
-        similar_ids = await asyncio.to_thread(process_series_upsert, str(series_id), title, description, categories, tags)
+        similar_ids = await asyncio.to_thread(process_series_upsert, str(series_id), title, description, categories, tags, age_rating, language)
         
         from app.kafka.kafka_producer_service import send_recommendation_result
         await send_recommendation_result(str(series_id), similar_ids)

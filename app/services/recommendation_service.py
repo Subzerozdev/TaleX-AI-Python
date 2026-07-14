@@ -5,7 +5,7 @@ from loguru import logger
 from app.rag.embeddings import embed_text
 from app.rag.milvus_recommendation_store import insert_series_vector, search_similar_series
 
-def process_series_upsert(series_id: str, title: str, description: str, categories: list[str], tags: list[str]) -> list[str]:
+def process_series_upsert(series_id: str, title: str, description: str, categories: list[str], tags: list[str], age_rating: str = "", language: str = "") -> list[str]:
     """
     Called when a Series is created/updated (via Debezium CDC).
     Embeds the metadata, stores it in Milvus, and returns similar Series IDs.
@@ -17,8 +17,10 @@ def process_series_upsert(series_id: str, title: str, description: str, categori
     tag_str = ", ".join(tags) if tags else ""
     desc_str = description if description else ""
     title_str = title if title else ""
+    age_str = age_rating if age_rating else "Unrated"
+    lang_str = language if language else "Unknown"
 
-    document = f"Title: {title_str}. Description: {desc_str}. Categories: {cat_str}. Tags: {tag_str}"
+    document = f"Title: {title_str}. Description: {desc_str}. Categories: {cat_str}. Tags: {tag_str}. Age Rating: {age_str}. Language: {lang_str}."
 
     try:
         # Embed text

@@ -55,7 +55,11 @@ async def lifespan(application: FastAPI):
     if vector_store.get_video_count() == 0:
         _seed_data()
 
-    # 6. Kafka producer + consumer (content pipeline)
+    # 6. Khởi tạo MongoDB (motor)
+    from app.db.mongodb import init_mongodb, close_mongodb
+    await init_mongodb()
+
+    # 7. Kafka producer + consumer (content pipeline)
     await start_producer()
     consumer_task = asyncio.create_task(consume_loop())
 
@@ -67,6 +71,7 @@ async def lifespan(application: FastAPI):
     logger.info("Shutting down TaleX AI Service...")
     consumer_task.cancel()
     await stop_producer()
+    await close_mongodb()
 
 
 def _seed_data():
