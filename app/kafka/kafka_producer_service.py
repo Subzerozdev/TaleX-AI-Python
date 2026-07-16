@@ -72,14 +72,15 @@ async def send_moderation_result(media_id: str, result: dict):
     logger.info(f"Moderation result sent: mediaId={media_id}")
 
 
-async def send_recommendation_result(series_id: str, similar_ids: list[str]):
+async def send_recommendation_result(series_id: str, similar_ids: list[str], action: str = "UPSERT"):
     """Send recommendation result to Spring Boot."""
     if _producer is None:
         logger.warning("Kafka producer not available, skipping send")
         return
     result = {
         "seriesId": series_id,
-        "similarIds": similar_ids
+        "similarIds": similar_ids,
+        "action": action
     }
     await _producer.send_and_wait(TOPIC_RECOMMENDATION_RESULT, key=series_id, value=result)
-    logger.info(f"Recommendation result sent: seriesId={series_id}")
+    logger.info(f"Recommendation result sent: seriesId={series_id}, action={action}")

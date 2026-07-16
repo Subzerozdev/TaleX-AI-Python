@@ -100,3 +100,12 @@ def delete_by_series_id(series_id: str) -> None:
     expr = f'series_id == "{series_id}"'
     collection.delete(expr)
     collection.flush()
+
+def get_vector_by_series_id(series_id: str) -> list[float] | None:
+    """Lấy vector của 1 series từ Milvus (nếu có)."""
+    collection = get_collection()
+    expr = f'series_id == "{series_id}"'
+    results = collection.query(expr=expr, output_fields=["vector"], limit=1)
+    if results:
+        return results[0].get("vector")
+    return None

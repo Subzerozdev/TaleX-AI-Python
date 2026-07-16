@@ -1,0 +1,37 @@
+2026-07-16 16:06:52 | INFO    | app.main:lifespan:38 - Starting TaleX AI Service...
+2026-07-16 16:06:52 | INFO    | app.rag.embeddings:load_model:31 - Loading embedding model: all-MiniLM-L6-v2...
+2026-07-16 16:06:56 | INFO    | app.rag.embeddings:load_model:33 - Embedding model loaded. Dimension: 384
+2026-07-16 16:06:56 | INFO    | app.rag.vector_store:init_vector_store:28 - Initializing ChromaDB at: ./chroma_data
+2026-07-16 16:06:56 | INFO    | app.rag.vector_store:init_vector_store:40 - ChromaDB ready. Collection 'talex_videos' has 0 videos.
+2026-07-16 16:06:56 | INFO    | app.llm.gemini_client:init_gemini:33 - Gemini client initialized. Model: gemini-2.5-flash
+2026-07-16 16:06:56 | INFO    | app.fingerprint.milvus_store:init_milvus:32 - Connecting to Milvus at milvus:19530
+2026-07-16 16:06:58 | INFO    | app.fingerprint.milvus_store:_create_collection:79 - Created Milvus collection 'talex_fingerprints' with IVF_FLAT index.
+2026-07-16 16:06:58 | INFO    | app.fingerprint.milvus_store:init_milvus:49 - Milvus ready. Collection 'talex_fingerprints' has 0 vectors.
+2026-07-16 16:06:59 | INFO    | app.rag.milvus_recommendation_store:_create_collection:58 - Created Milvus collection 'talex_series_recommendations' with HNSW index.
+2026-07-16 16:06:59 | INFO    | app.rag.milvus_recommendation_store:init_recommendation_milvus:32 - Milvus Recommendation ready. Collection 'talex_series_recommendations' has 0 vectors.
+2026-07-16 16:06:59 | INFO    | app.main:_seed_data:88 - Seeding 20 videos into ChromaDB...
+2026-07-16 16:06:59 | DEBUG   | app.rag.vector_store:add_video:71 - Upserted video 1 into ChromaDB.
+2026-07-16 16:06:59 | DEBUG   | app.rag.vector_store:add_video:71 - Upserted video 2 into ChromaDB.
+2026-07-16 16:06:59 | DEBUG   | app.rag.vector_store:add_video:71 - Upserted video 3 into ChromaDB.
+2026-07-16 16:06:59 | DEBUG   | app.rag.vector_store:add_video:71 - Upserted video 4 into ChromaDB.
+2026-07-16 16:06:59 | DEBUG   | app.rag.vector_store:add_video:71 - Upserted video 5 into ChromaDB.
+2026-07-16 16:06:59 | DEBUG   | app.rag.vector_store:add_video:71 - Upserted video 6 into ChromaDB.
+2026-07-16 16:06:59 | DEBUG   | app.rag.vector_store:add_video:71 - Upserted video 7 into ChromaDB.
+2026-07-16 16:06:59 | DEBUG   | app.rag.vector_store:add_video:71 - Upserted video 8 into ChromaDB.
+2026-07-16 16:06:59 | DEBUG   | app.rag.vector_store:add_video:71 - Upserted video 9 into ChromaDB.
+2026-07-16 16:06:59 | DEBUG   | app.rag.vector_store:add_video:71 - Upserted video 10 into ChromaDB.
+2026-07-16 16:06:59 | DEBUG   | app.rag.vector_store:add_video:71 - Upserted video 11 into ChromaDB.
+2026-07-16 16:06:59 | DEBUG   | app.rag.vector_store:add_video:71 - Upserted video 12 into ChromaDB.
+2026-07-16 16:06:59 | DEBUG   | app.rag.vector_store:add_video:71 - Upserted video 13 into ChromaDB.
+2026-07-16 16:06:59 | DEBUG   | app.rag.vector_store:add_video:71 - Upserted video 14 into ChromaDB.
+2026-07-16 16:06:59 | DEBUG   | app.rag.vector_store:add_video:71 - Upserted video 15 into ChromaDB.
+2026-07-16 16:06:59 | DEBUG   | app.rag.vector_store:add_video:71 - Upserted video 16 into ChromaDB.
+2026-07-16 16:06:59 | DEBUG   | app.rag.vector_store:add_video:71 - Upserted video 17 into ChromaDB.
+2026-07-16 16:07:00 | DEBUG   | app.rag.vector_store:add_video:71 - Upserted video 18 into ChromaDB.
+2026-07-16 16:07:00 | DEBUG   | app.rag.vector_store:add_video:71 - Upserted video 19 into ChromaDB.
+2026-07-16 16:07:00 | DEBUG   | app.rag.vector_store:add_video:71 - Upserted video 20 into ChromaDB.
+2026-07-16 16:07:00 | INFO    | app.main:_seed_data:108 - Seeded 20 videos successfully.
+2026-07-16 16:07:01 | INFO    | app.db.mongodb:init_mongodb:15 - Connected to MongoDB Atlas database: TaleX-FeatureStore
+2026-07-16 16:07:01 | INFO    | app.kafka.kafka_producer_service:start_producer:45 - Kafka producer started
+2026-07-16 16:07:01 | INFO    | app.main:lifespan:66 - TaleX AI Service ready!
+2026-07-16 16:07:04 | INFO    | app.kafka.kafka_consumer_service:consume_loop:53 - Kafka consumer started — listening on [content-pipeline-job, content-moderation-job, talex-cdc.public.series]

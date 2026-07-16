@@ -46,3 +46,45 @@ def process_series_upsert(series_id: str, title: str, description: str, categori
     except Exception as e:
         logger.error(f"Failed to process series recommendation for {series_id}: {e}")
         return []
+
+def process_series_deletion(series_id: str) -> list[str]:
+    """
+    Called when a Series is deleted/hidden.
+    Finds its neighbors before deleting it from Milvus, returns them for cross-updating.
+    """
+    try:
+        from app.rag.milvus_recommendation_store import get_vector_by_series_id, delete_by_series_id
+        vector = get_vector_by_series_id(series_id)
+        
+        neighbors = []
+        if vector:
+            raw_similar = search_similar_series(vector, top_k=11)
+            if series_id in raw_similar:
+                raw_similar.remove(series_id)
+            neighbors = raw_similar[:10]
+        
+        delete_by_series_id(series_id)
+        logger.info(f"Deleted vector for series_id={series_id}. Notifying {len(neighbors)} neighbors.")
+        return neighbors
+    except Exception as e:
+        logger.error(f"Failed to process series deletion for {series_id}: {e}")
+        return []
+
+def recalculate_series(series_id: str) -> list[str]:
+    """
+    Called during symmetric updates.
+    Recalculates neighbors using existing vector.
+    """
+    try:
+        from app.rag.milvus_recommendation_store import get_vector_by_series_id
+        vector = get_vector_by_series_id(series_id)
+        if not vector:
+            return []
+            
+        similar_ids = search_similar_series(vector, top_k=11)
+        if series_id in similar_ids:
+            similar_ids.remove(series_id)
+        return similar_ids[:10]
+    except Exception as e:
+        logger.error(f"Failed to recalculate series {series_id}: {e}")
+        return []

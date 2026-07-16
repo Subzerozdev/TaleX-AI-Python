@@ -1,0 +1,24 @@
+Kafka SSL certs written to /app/certs/
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+2026-07-16 16:06:52 | INFO    | app.main:lifespan - Starting TaleX AI Service...
+2026-07-16 16:06:52 | INFO    | app.rag.embeddings:load_model - Loading embedding model: all-MiniLM-L6-v2...
+2026-07-16 16:06:56 | INFO    | app.rag.embeddings:load_model - Embedding model loaded. Dimension: 384
+2026-07-16 16:06:56 | INFO    | app.rag.vector_store:init_vector_store - Initializing ChromaDB at: ./chroma_data
+Failed to send telemetry event ClientStartEvent: capture() takes 1 positional argument but 3 were given
+Failed to send telemetry event ClientCreateCollectionEvent: capture() takes 1 positional argument but 3 were given
+2026-07-16 16:06:56 | INFO    | app.rag.vector_store:init_vector_store - ChromaDB ready. Collection 'talex_videos' has 0 videos.
+2026-07-16 16:06:56 | INFO    | app.llm.gemini_client:init_gemini - Gemini client initialized. Model: gemini-2.5-flash
+2026-07-16 16:06:56 | INFO    | app.fingerprint.milvus_store:init_milvus - Connecting to Milvus at milvus:19530
+2026-07-16 16:06:58 | INFO    | app.fingerprint.milvus_store:_create_collection - Created Milvus collection 'talex_fingerprints' with IVF_FLAT index.
+2026-07-16 16:06:58 | INFO    | app.fingerprint.milvus_store:init_milvus - Milvus ready. Collection 'talex_fingerprints' has 0 vectors.
+2026-07-16 16:06:59 | INFO    | app.rag.milvus_recommendation_store:_create_collection - Created Milvus collection 'talex_series_recommendations' with HNSW index.
+2026-07-16 16:06:59 | INFO    | app.rag.milvus_recommendation_store:init_recommendation_milvus - Milvus Recommendation ready. Collection 'talex_series_recommendations' has 0 vectors.
+2026-07-16 16:06:59 | INFO    | app.main:_seed_data - Seeding 20 videos into ChromaDB...
+2026-07-16 16:07:00 | INFO    | app.main:_seed_data - Seeded 20 videos successfully.
+2026-07-16 16:07:01 | INFO    | app.db.mongodb:init_mongodb - Connected to MongoDB Atlas database: TaleX-FeatureStore
+2026-07-16 16:07:01 | INFO    | app.kafka.kafka_producer_service:start_producer - Kafka producer started
+2026-07-16 16:07:01 | INFO    | app.main:lifespan - TaleX AI Service ready!
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+2026-07-16 16:07:04 | INFO    | app.kafka.kafka_consumer_service:consume_loop - Kafka consumer started — listening on [content-pipeline-job, content-moderation-job, talex-cdc.public.series]

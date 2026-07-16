@@ -130,41 +130,76 @@ async def _process_debezium_series(data: dict):
     Expects data in standard Debezium format.
     """
     try:
-        # Some Debezium configs have 'payload', some don't (schemas.enable=false)
-        payload = data.get("payload", data)
-        
-        op = payload.get("op", "u")  # default to update if not present
-        
-        # Debezium places the new row data in 'after'
-        after = payload.get("after")
-        if op not in ["c", "u", "r"]:
-            logger.info(f"Ignored op {op}")
-            return
-            
-        after = payload.get("after")
-        if not after:
-            logger.info("Ignored: no after data")
-            return
-            
-        series_id = after.get("series_id") or after.get("id")
-        title = after.get("title", "")
-        description = after.get("description", "")
-        
-        # Fetch enriched metadata from MongoDB
-        from app.db.mongodb import get_series_metadata
-        metadata = await get_series_metadata(str(series_id))
-        
-        categories = metadata.get("category", [])
-        tags = metadata.get("tags", [])
-        age_rating = metadata.get("ageRating", "")
-        language = metadata.get("language", "")
-        
         import asyncio
-        similar_ids = await asyncio.to_thread(process_series_upsert, str(series_id), title, description, categories, tags, age_rating, language)
-        
         from app.kafka.kafka_producer_service import send_recommendation_result
-        await send_recommendation_result(str(series_id), similar_ids)
+        from app.services.recommendation_service import process_series_upsert, process_series_deletion, recalculate_series
+        from app.db.mongodb import get_series_metadata
+
+        payload = data.get("payload", data)
+        op = payload.get("op", "u")
+        
+        if op == "c":
+            logger.info("Ignored Create (op='c') event. Waiting for status change to SCHEDULED/PUBLISHED.")
+            return
             
+        if op == "d":
+            before = payload.get("before")
+            if not before:
+                return
+            series_id = before.get("series_id") or before.get("id")
+            logger.info(f"Processing Deletion for series_id={series_id} (op='d')")
+            
+            neighbors = await asyncio.to_thread(process_series_deletion, str(series_id))
+            await send_recommendation_result(str(series_id), [], action="DELETE")
+            
+            # Symmetric update for old neighbors
+            for n_id in neighbors:
+                new_sim = await asyncio.to_thread(recalculate_series, n_id)
+                await send_recommendation_result(n_id, new_sim, action="UPSERT")
+            return
+            
+        if op == "u" or op == "r":
+            after = payload.get("after")
+            if not after:
+                return
+                
+            series_id = after.get("series_id") or after.get("id")
+            title = after.get("title", "")
+            description = after.get("description", "")
+            status = after.get("status", "")
+            is_deleted = after.get("is_deleted", False)
+            
+            # Treat specific statuses or is_deleted as Deletion
+            if is_deleted or status in ["DELETED", "DRAFT", "HIDDEN", "FORCE_HIDDEN"]:
+                logger.info(f"Processing Deletion for series_id={series_id} due to status={status}, is_deleted={is_deleted}")
+                neighbors = await asyncio.to_thread(process_series_deletion, str(series_id))
+                await send_recommendation_result(str(series_id), [], action="DELETE")
+                
+                # Symmetric update for old neighbors
+                for n_id in neighbors:
+                    new_sim = await asyncio.to_thread(recalculate_series, n_id)
+                    await send_recommendation_result(n_id, new_sim, action="UPSERT")
+                return
+                
+            # Process Upsert only for valid active statuses
+            if status in ["PUBLISHED", "SCHEDULED"]:
+                logger.info(f"Processing Upsert for series_id={series_id} due to status={status}")
+                metadata = await get_series_metadata(str(series_id))
+                categories = metadata.get("category", [])
+                tags = metadata.get("tags", [])
+                age_rating = metadata.get("ageRating", "")
+                language = metadata.get("language", "")
+                
+                similar_ids = await asyncio.to_thread(process_series_upsert, str(series_id), title, description, categories, tags, age_rating, language)
+                await send_recommendation_result(str(series_id), similar_ids, action="UPSERT")
+                
+                # Symmetric update for new neighbors
+                for n_id in similar_ids:
+                    new_sim = await asyncio.to_thread(recalculate_series, n_id)
+                    await send_recommendation_result(n_id, new_sim, action="UPSERT")
+            else:
+                logger.info(f"Ignored Upsert for series_id={series_id}, unsupported status={status}")
+
     except Exception as e:
         logger.error(f"Failed to process Debezium series event: {e}", exc_info=True)
 
