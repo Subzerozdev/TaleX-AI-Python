@@ -83,11 +83,11 @@ async def _process_pipeline_job(data: dict):
         try:
             if job.media_type == "IMAGE":
                 preview_bytes = generate_image_preview(file_bytes)
-                preview_s3_key = f"previews/{job.media_id}.jpg"
+                preview_s3_key = f"images/previews/{job.media_id}.jpg"
                 upload_to_s3(preview_s3_key, preview_bytes, content_type="image/jpeg", bucket=job.s3_bucket)
             elif job.media_type == "VIDEO":
                 preview_bytes = generate_video_preview(file_bytes)
-                preview_s3_key = f"previews/{job.media_id}.mp4"
+                preview_s3_key = f"videos/previews/{job.media_id}.mp4"
                 upload_to_s3(preview_s3_key, preview_bytes, content_type="video/mp4", bucket=job.s3_bucket)
         except Exception as pe:
             logger.error(f"Failed to generate preview for {job.media_id}: {pe}")
