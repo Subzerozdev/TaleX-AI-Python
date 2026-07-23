@@ -31,3 +31,13 @@ def download_from_s3(s3_key: str, bucket: str = None) -> bytes:
     data = response["Body"].read()
     logger.info(f"S3 download complete: {len(data)} bytes")
     return data
+
+def upload_to_s3(s3_key: str, file_bytes: bytes, content_type: str = "application/octet-stream", bucket: str = None) -> None:
+    """Upload file bytes to S3."""
+    bucket = bucket or settings.AWS_S3_BUCKET
+    client = get_s3_client()
+    if client is None:
+        raise RuntimeError("S3 client not configured — check AWS credentials")
+    logger.info(f"S3 upload: bucket={bucket}, key={s3_key}, size={len(file_bytes)} bytes")
+    client.put_object(Bucket=bucket, Key=s3_key, Body=file_bytes, ContentType=content_type)
+    logger.info(f"S3 upload complete: {s3_key}")

@@ -43,6 +43,7 @@ class CopyrightResultMessage(BaseModel):
     processed_at: str = Field(alias="processedAt")
     success: bool = True
     error_message: Optional[str] = Field(None, alias="errorMessage")
+    preview_s3_key: Optional[str] = Field(None, alias="previewS3Key")
 
 
 class ModerationViolationItem(BaseModel):

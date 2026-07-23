@@ -7,7 +7,7 @@ from datetime import datetime
 from aiokafka import AIOKafkaConsumer
 from loguru import logger
 
-from app.aws.s3_client import download_from_s3
+from app.aws.s3_client import download_from_s3, upload_to_s3
 from app.core.config import settings
 from app.kafka.kafka_config import TOPIC_PIPELINE_JOB, TOPIC_MODERATION_JOB, TOPIC_RECOMMENDATION_SYNC
 from app.kafka.kafka_producer_service import send_copyright_result, send_moderation_result
@@ -15,7 +15,7 @@ from app.schemas.kafka_messages import PipelineJobMessage
 from app.services.fingerprint_service import process_fingerprint
 from app.services.video_moderation_service import moderate_media
 from app.services.recommendation_service import process_series_upsert
-
+from app.services.preview_service import generate_image_preview, generate_video_preview
 
 def _build_ssl_context() -> ssl.SSLContext | None:
     """Build SSL context from Aiven PEM cert paths."""
@@ -78,6 +78,21 @@ async def _process_pipeline_job(data: dict):
         file_bytes = download_from_s3(job.s3_key, job.s3_bucket)
         filename = job.s3_key.rsplit("/", 1)[-1] if "/" in job.s3_key else job.s3_key
 
+        # Generate Preview
+        preview_s3_key = None
+        try:
+            if job.media_type == "IMAGE":
+                preview_bytes = generate_image_preview(file_bytes)
+                preview_s3_key = f"previews/{job.media_id}.jpg"
+                upload_to_s3(preview_s3_key, preview_bytes, content_type="image/jpeg", bucket=job.s3_bucket)
+            elif job.media_type == "VIDEO":
+                preview_bytes = generate_video_preview(file_bytes)
+                preview_s3_key = f"previews/{job.media_id}.mp4"
+                upload_to_s3(preview_s3_key, preview_bytes, content_type="video/mp4", bucket=job.s3_bucket)
+        except Exception as pe:
+            logger.error(f"Failed to generate preview for {job.media_id}: {pe}")
+            # We don't fail the entire job if preview fails
+
         # Run fingerprint pipeline
         response = process_fingerprint(job.media_id, file_bytes, filename)
 
@@ -104,6 +119,7 @@ async def _process_pipeline_job(data: dict):
             "processedAt": datetime.utcnow().isoformat(),
             "success": True,
             "errorMessage": None,
+            "previewS3Key": preview_s3_key,
         }
         await send_copyright_result(job.media_id, result)
 
