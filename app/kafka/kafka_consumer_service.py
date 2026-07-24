@@ -1,5 +1,6 @@
 """Kafka consumer — receive pipeline jobs from Spring Boot, process, send results."""
 
+import asyncio
 import json
 import ssl
 from datetime import datetime
@@ -74,8 +75,10 @@ async def _process_pipeline_job(data: dict):
     logger.info(f"Processing pipeline job: mediaId={job.media_id}, type={job.media_type}")
 
     try:
-        # Download file from S3
-        file_bytes = download_from_s3(job.s3_key, job.s3_bucket)
+        # Blocking S3/CPU work — run in a thread so it doesn't stall the event loop
+        # and starve the Kafka consumer's heartbeat, which causes session timeouts
+        # and endless redelivery of the same message.
+        file_bytes = await asyncio.to_thread(download_from_s3, job.s3_key, job.s3_bucket)
         filename = job.s3_key.rsplit("/", 1)[-1] if "/" in job.s3_key else job.s3_key
 
         # Generate Preview
@@ -94,7 +97,7 @@ async def _process_pipeline_job(data: dict):
             # We don't fail the entire job if preview fails
 
         # Run fingerprint pipeline
-        response = process_fingerprint(job.media_id, file_bytes, filename)
+        response = await asyncio.to_thread(process_fingerprint, job.media_id, file_bytes, filename)
 
         # Build camelCase result for Spring Boot
         result = {
@@ -146,7 +149,6 @@ async def _process_debezium_series(data: dict):
     Expects data in standard Debezium format.
     """
     try:
-        import asyncio
         from app.kafka.kafka_producer_service import send_recommendation_result
         from app.services.recommendation_service import process_series_upsert, process_series_deletion, recalculate_series
         from app.db.mongodb import get_series_metadata
@@ -226,8 +228,12 @@ async def _process_moderation_job(data: dict):
     logger.info(f"Processing moderation job: mediaId={job.media_id}, type={job.media_type}")
 
     try:
-        file_bytes = download_from_s3(job.s3_key, job.s3_bucket)
-        result = moderate_media(file_bytes, job.media_type, job.media_id, job.correlation_id)
+        # Blocking S3/Rekognition work — run in a thread, same reasoning as the
+        # copyright pipeline (avoid starving the Kafka consumer's heartbeat).
+        file_bytes = await asyncio.to_thread(download_from_s3, job.s3_key, job.s3_bucket)
+        result = await asyncio.to_thread(
+            moderate_media, file_bytes, job.media_type, job.media_id, job.correlation_id
+        )
         await send_moderation_result(job.media_id, result)
     except Exception as e:
         logger.error(f"Moderation failed for mediaId={job.media_id}: {e}")
