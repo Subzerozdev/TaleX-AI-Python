@@ -6,6 +6,7 @@ client is blocking/sync). For IMAGE: single DetectModerationLabels call.
 Cost: ~$0.001/frame = ~$0.03 per video (30 frames max).
 """
 
+import io
 import json
 import os
 import shutil
@@ -15,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 from loguru import logger
+from PIL import Image
 from app.aws.rekognition_client import detect_moderation_labels
 from app.core.config import settings
 
@@ -66,9 +68,30 @@ def moderate_media(file_bytes: bytes, media_type: str, media_id: str, correlatio
         }
 
 
+def _normalize_for_rekognition(file_bytes: bytes) -> bytes:
+    """Re-encode upload as baseline RGB JPEG before calling Rekognition.
+
+    Rekognition only accepts JPEG/PNG and rejects WEBP/BMP/CMYK-JPEG with
+    InvalidImageFormatException — but the upload whitelist (IMAGE_EXTENSIONS
+    in fingerprint_service.py) allows WEBP/BMP/JFIF for fingerprinting, which
+    Pillow reads fine regardless of format. Re-encoding here closes that gap
+    without restricting what creators can upload.
+    """
+    try:
+        image = Image.open(io.BytesIO(file_bytes))
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=90)
+        return buffer.getvalue()
+    except Exception as e:
+        logger.warning(f"Could not normalize image for Rekognition, using original bytes: {e}")
+        return file_bytes
+
+
 def _moderate_image(file_bytes: bytes) -> tuple[list[dict], list]:
     """Single Rekognition call for image."""
-    labels = detect_moderation_labels(file_bytes)
+    labels = detect_moderation_labels(_normalize_for_rekognition(file_bytes))
     violations = []
     threshold = settings.REKOGNITION_CONFIDENCE_THRESHOLD
     for label in labels:
