@@ -10,10 +10,15 @@ from loguru import logger
 
 from app.aws.s3_client import download_from_s3, upload_to_s3
 from app.core.config import settings
-from app.kafka.kafka_config import TOPIC_PIPELINE_JOB, TOPIC_MODERATION_JOB, TOPIC_RECOMMENDATION_SYNC
+from app.kafka.kafka_config import (
+    TOPIC_PIPELINE_JOB,
+    TOPIC_MODERATION_JOB,
+    TOPIC_RECOMMENDATION_SYNC,
+    TOPIC_MEDIA_DELETE,
+)
 from app.kafka.kafka_producer_service import send_copyright_result, send_moderation_result
 from app.schemas.kafka_messages import PipelineJobMessage
-from app.services.fingerprint_service import process_fingerprint
+from app.services.fingerprint_service import process_fingerprint, delete_fingerprint
 from app.services.video_moderation_service import moderate_media
 from app.services.recommendation_service import process_series_upsert
 from app.services.preview_service import generate_image_preview, generate_video_preview
@@ -42,36 +47,96 @@ async def consume_loop():
         "group_id": settings.KAFKA_CONSUMER_GROUP,
         "value_deserializer": lambda v: json.loads(v.decode("utf-8")),
         "auto_offset_reset": "earliest",
-        "enable_auto_commit": True,
+        # Commit thủ công sau khi xử lý xong (xem bên dưới) — auto-commit theo thời
+        # gian có thể đánh dấu "đã đọc" một job đang xử lý dở, nếu service crash/restart
+        # đúng lúc đó thì job bị mất vĩnh viễn, không retry, không báo lỗi cho BE.
+        "enable_auto_commit": False,
         "max_poll_interval_ms": 300000,
     }
     if ssl_ctx:
         kwargs["security_protocol"] = "SSL"
         kwargs["ssl_context"] = ssl_ctx
 
-    consumer = AIOKafkaConsumer(TOPIC_PIPELINE_JOB, TOPIC_MODERATION_JOB, TOPIC_RECOMMENDATION_SYNC, **kwargs)
+    consumer = AIOKafkaConsumer(
+        TOPIC_PIPELINE_JOB, TOPIC_MODERATION_JOB, TOPIC_RECOMMENDATION_SYNC, TOPIC_MEDIA_DELETE, **kwargs
+    )
     await consumer.start()
-    logger.info(f"Kafka consumer started — listening on [{TOPIC_PIPELINE_JOB}, {TOPIC_MODERATION_JOB}, {TOPIC_RECOMMENDATION_SYNC}]")
+    logger.info(
+        f"Kafka consumer started — listening on "
+        f"[{TOPIC_PIPELINE_JOB}, {TOPIC_MODERATION_JOB}, {TOPIC_RECOMMENDATION_SYNC}, {TOPIC_MEDIA_DELETE}]"
+    )
 
     try:
-        async for msg in consumer:
-            try:
-                if msg.topic == TOPIC_PIPELINE_JOB:
-                    await _process_pipeline_job(msg.value)
-                elif msg.topic == TOPIC_MODERATION_JOB:
-                    await _process_moderation_job(msg.value)
-                elif msg.topic == TOPIC_RECOMMENDATION_SYNC:
-                    await _process_debezium_series(msg.value)
-            except Exception as e:
-                logger.error(f"Job processing failed (topic={msg.topic}): {e}", exc_info=True)
+        while True:
+            # Lấy 1 batch message thay vì từng cái — cho phép xử lý song song trong
+            # cùng 1 consumer, tránh episode nhiều trang (100 job Content ID + 100 job
+            # Kiểm duyệt) phải xếp hàng tuần tự dù mỗi job riêng lẻ chỉ mất vài giây.
+            batches = await consumer.getmany(timeout_ms=1000, max_records=10)
+            if not batches:
+                continue
+
+            tasks = [
+                _dispatch_job(msg)
+                for messages in batches.values()
+                for msg in messages
+            ]
+            await asyncio.gather(*tasks)
+
+            # Commit sau khi CẢ BATCH xử lý xong (lỗi từng job đã tự gửi error-result
+            # về BE bên trong _dispatch_job, không throw ra đây) — nếu crash giữa batch,
+            # message chưa commit sẽ được Kafka redeliver; các _process_* đều idempotent
+            # (gửi lại cùng 1 kết quả cho BE) nên an toàn khi bị xử lý lại.
+            await consumer.commit()
     finally:
         await consumer.stop()
         logger.info("Kafka consumer stopped")
 
 
+# Giới hạn số job chạy song song cùng lúc (tránh làm quá tải Rekognition/Milvus/S3).
+# Đặt ở module-level để chặn đúng across nhiều batch liền kề, không chỉ trong 1 batch.
+_JOB_SEMAPHORE = asyncio.Semaphore(8)
+
+
+async def _dispatch_job(msg):
+    """Route 1 Kafka message tới handler tương ứng, giới hạn concurrency bằng semaphore."""
+    async with _JOB_SEMAPHORE:
+        try:
+            if msg.topic == TOPIC_PIPELINE_JOB:
+                await _process_pipeline_job(msg.value)
+            elif msg.topic == TOPIC_MODERATION_JOB:
+                await _process_moderation_job(msg.value)
+            elif msg.topic == TOPIC_RECOMMENDATION_SYNC:
+                await _process_debezium_series(msg.value)
+            elif msg.topic == TOPIC_MEDIA_DELETE:
+                await _process_media_delete(msg.value)
+        except Exception as e:
+            logger.error(f"Job processing failed (topic={msg.topic}): {e}", exc_info=True)
+
+
 async def _process_pipeline_job(data: dict):
     """Process a single pipeline job: download from S3, fingerprint, send result."""
-    job = PipelineJobMessage.model_validate(data)
+    try:
+        job = PipelineJobMessage.model_validate(data)
+    except Exception as e:
+        # Message sai schema (vd thiếu field bắt buộc) — phải gửi lỗi về BE ngay ở đây,
+        # nếu không throw ra ngoài sẽ bị _dispatch_job() nuốt mất, BE không bao giờ nhận
+        # được kết quả, media kẹt vĩnh viễn ở trạng thái đang xử lý.
+        logger.error(f"Invalid pipeline job message: {e}")
+        media_id = data.get("mediaId")
+        if media_id:
+            await send_copyright_result(media_id, {
+                "mediaId": media_id,
+                "correlationId": data.get("correlationId") or "",
+                "contentId": None,
+                "isDuplicate": False,
+                "overallSimilarity": 0.0,
+                "fingerprintCount": 0,
+                "violations": [],
+                "processedAt": datetime.utcnow().isoformat(),
+                "success": False,
+                "errorMessage": f"Invalid job message: {e}",
+            })
+        return
     logger.info(f"Processing pipeline job: mediaId={job.media_id}, type={job.media_type}")
 
     try:
@@ -97,7 +162,9 @@ async def _process_pipeline_job(data: dict):
             # We don't fail the entire job if preview fails
 
         # Run fingerprint pipeline
-        response = await asyncio.to_thread(process_fingerprint, job.media_id, file_bytes, filename)
+        response = await asyncio.to_thread(
+            process_fingerprint, job.media_id, job.creator_id, file_bytes, filename
+        )
 
         # Build camelCase result for Spring Boot
         result = {
@@ -224,7 +291,27 @@ async def _process_debezium_series(data: dict):
 
 async def _process_moderation_job(data: dict):
     """Process moderation job: download from S3, run Rekognition, send result."""
-    job = PipelineJobMessage.model_validate(data)
+    try:
+        job = PipelineJobMessage.model_validate(data)
+    except Exception as e:
+        # Xem giải thích ở _process_pipeline_job() — không được để lỗi validate văng ra
+        # ngoài, nếu không job mất tích vĩnh viễn, BE không bao giờ nhận được kết quả.
+        logger.error(f"Invalid moderation job message: {e}")
+        media_id = data.get("mediaId")
+        if media_id:
+            await send_moderation_result(media_id, {
+                "mediaId": media_id,
+                "correlationId": data.get("correlationId") or "",
+                "isSafe": False,
+                "primaryLabel": None,
+                "confidenceScore": 0.0,
+                "violations": [],
+                "rawResponse": "",
+                "processedAt": datetime.utcnow().isoformat(),
+                "success": False,
+                "errorMessage": f"Invalid job message: {e}",
+            })
+        return
     logger.info(f"Processing moderation job: mediaId={job.media_id}, type={job.media_type}")
 
     try:
@@ -250,3 +337,15 @@ async def _process_moderation_job(data: dict):
             "errorMessage": str(e),
         }
         await send_moderation_result(job.media_id, error_result)
+
+
+async def _process_media_delete(data: dict):
+    """Dọn fingerprint Milvus khi BE báo media đã bị xóa (best-effort, không có result topic)."""
+    media_id = data.get("mediaId")
+    if not media_id:
+        return
+    try:
+        await asyncio.to_thread(delete_fingerprint, media_id)
+        logger.info(f"Deleted fingerprint for mediaId={media_id}")
+    except Exception as e:
+        logger.error(f"Failed to delete fingerprint for mediaId={media_id}: {e}")

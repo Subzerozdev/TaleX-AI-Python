@@ -45,7 +45,11 @@ class Settings:
 
     # Fingerprint
     FINGERPRINT_FPS: int = int(os.getenv("FINGERPRINT_FPS", "1"))
-    FINGERPRINT_SIMILARITY_THRESHOLD: float = float(os.getenv("FINGERPRINT_SIMILARITY_THRESHOLD", "0.85"))
+    # 0.90 thay vì 0.85 mặc định — tranh vẽ (màu phẳng, nét đơn giản) dễ bị pHash coi
+    # là "giống nhau" hơn ảnh chụp thật dù nội dung khác hẳn, cần ngưỡng chặt hơn để
+    # giảm false positive (rủi ro chấp nhận được vì giờ đã route qua Staff review,
+    # không còn tự động chặn cứng — xem ContentPipelineServiceImpl.handleCopyrightResult).
+    FINGERPRINT_SIMILARITY_THRESHOLD: float = float(os.getenv("FINGERPRINT_SIMILARITY_THRESHOLD", "0.90"))
     FINGERPRINT_MIN_MATCH_SECONDS: int = int(os.getenv("FINGERPRINT_MIN_MATCH_SECONDS", "5"))
     FINGERPRINT_MAX_GAP_SECONDS: int = int(os.getenv("FINGERPRINT_MAX_GAP_SECONDS", "2"))
     FINGERPRINT_MAX_FILE_SIZE_MB: int = int(os.getenv("FINGERPRINT_MAX_FILE_SIZE_MB", "100"))

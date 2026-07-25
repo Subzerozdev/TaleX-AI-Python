@@ -19,7 +19,11 @@ from loguru import logger
 from app.core.config import settings
 from app.fingerprint.hasher import VECTOR_DIM
 
-_COLLECTION_NAME = "talex_fingerprints"
+# Đổi tên collection: schema cũ dùng FLOAT_VECTOR + COSINE (sai chuẩn so sánh pHash,
+# gây false positive giữa các ảnh phong cách vẽ giống nhau nhưng nội dung khác hẳn).
+# Đặt tên mới để Milvus tự tạo collection sạch với schema BINARY_VECTOR + HAMMING đúng
+# chuẩn — dữ liệu fingerprint cũ (đang ở giai đoạn test) không cần migrate.
+_COLLECTION_NAME = "talex_fingerprints_v2"
 _collection: Collection | None = None
 _connected: bool = False
 
@@ -60,23 +64,28 @@ def _create_collection() -> None:
     fields = [
         FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
         FieldSchema(name="media_id", dtype=DataType.VARCHAR, max_length=50),
+        # Lưu kèm creator_id để loại trừ so khớp trong cùng creator (không tự báo "vi
+        # phạm" nội dung của chính mình — vd. nhân vật lặp lại xuyên suốt 1 bộ truyện).
+        FieldSchema(name="creator_id", dtype=DataType.VARCHAR, max_length=50),
         FieldSchema(name="timestamp", dtype=DataType.FLOAT),
-        FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=VECTOR_DIM),
+        # BINARY_VECTOR: pHash là 64 bit nhị phân, phải so bằng Hamming distance —
+        # KHÔNG dùng FLOAT_VECTOR + COSINE (sai chuẩn, xem ghi chú ở _COLLECTION_NAME).
+        FieldSchema(name="vector", dtype=DataType.BINARY_VECTOR, dim=VECTOR_DIM),
     ]
 
-    schema = CollectionSchema(fields=fields, description="TaleX video fingerprints")
+    schema = CollectionSchema(fields=fields, description="TaleX video fingerprints (Hamming/pHash)")
     _collection = Collection(name=_COLLECTION_NAME, schema=schema)
 
-    # Tạo index cho vector field (IVF_FLAT + cosine similarity)
+    # Index nhị phân + Hamming distance — đúng chuẩn so sánh pHash.
     index_params = {
-        "metric_type": "COSINE",
-        "index_type": "IVF_FLAT",
+        "metric_type": "HAMMING",
+        "index_type": "BIN_IVF_FLAT",
         "params": {"nlist": 128},
     }
     _collection.create_index(field_name="vector", index_params=index_params)
     _collection.load()
 
-    logger.info(f"Created Milvus collection '{_COLLECTION_NAME}' with IVF_FLAT index.")
+    logger.info(f"Created Milvus collection '{_COLLECTION_NAME}' with BIN_IVF_FLAT/HAMMING index.")
 
 
 def get_collection() -> Collection:
@@ -86,13 +95,14 @@ def get_collection() -> Collection:
     return _collection
 
 
-def insert_fingerprints(media_id: str, fingerprints: list[dict]) -> int:
+def insert_fingerprints(media_id: str, creator_id: str, fingerprints: list[dict]) -> int:
     """
     Lưu fingerprints của 1 video/ảnh vào Milvus.
 
     Args:
         media_id: ID video từ Spring Boot.
-        fingerprints: List of { "timestamp": float, "vector": list[float] }
+        creator_id: ID creator sở hữu media này (dùng để loại trừ khi search sau này).
+        fingerprints: List of { "timestamp": float, "vector": bytes }
 
     Returns:
         Số vectors đã insert.
@@ -100,47 +110,55 @@ def insert_fingerprints(media_id: str, fingerprints: list[dict]) -> int:
     collection = get_collection()
 
     media_ids = [media_id] * len(fingerprints)
+    creator_ids = [creator_id] * len(fingerprints)
     timestamps = [fp["timestamp"] for fp in fingerprints]
     vectors = [fp["vector"] for fp in fingerprints]
 
-    collection.insert([media_ids, timestamps, vectors])
+    collection.insert([media_ids, creator_ids, timestamps, vectors])
     collection.flush()
 
     logger.debug(f"Inserted {len(fingerprints)} vectors for media_id={media_id}")
     return len(fingerprints)
 
 
-def search_similar(vectors: list[list[float]], top_k: int = 5) -> list[dict]:
+def search_similar(vectors: list[bytes], top_k: int = 5) -> list[dict]:
     """
-    Tìm vectors giống nhất trong Milvus.
+    Tìm vectors giống nhất trong Milvus (Hamming distance trên BINARY_VECTOR).
 
     Args:
-        vectors: List of query vectors.
+        vectors: List of query vectors (bytes đã packbits, xem hasher.py).
         top_k: Số kết quả mỗi vector.
 
     Returns:
-        List of { "query_index": int, "media_id": int, "timestamp": float, "score": float }
+        List of { "query_index": int, "media_id": int, "creator_id": str,
+                   "timestamp": float, "score": float }
+        "score" đã quy đổi về thang 0..1 (càng cao càng giống — giữ đúng contract cũ
+        cho matcher.py/FINGERPRINT_SIMILARITY_THRESHOLD), dù Milvus trả Hamming distance
+        thô (số nguyên, thấp = giống).
     """
     collection = get_collection()
 
-    search_params = {"metric_type": "COSINE", "params": {"nprobe": 16}}
+    search_params = {"metric_type": "HAMMING", "params": {"nprobe": 16}}
 
     results = collection.search(
         data=vectors,
         anns_field="vector",
         param=search_params,
         limit=top_k,
-        output_fields=["media_id", "timestamp"],
+        output_fields=["media_id", "creator_id", "timestamp"],
     )
 
     matches = []
     for query_idx, hits in enumerate(results):
         for hit in hits:
+            hamming_distance = hit.score
+            similarity = 1.0 - (hamming_distance / VECTOR_DIM)
             matches.append({
                 "query_index": query_idx,
                 "media_id": hit.entity.get("media_id"),
+                "creator_id": hit.entity.get("creator_id"),
                 "timestamp": hit.entity.get("timestamp"),
-                "score": hit.score,
+                "score": similarity,
             })
 
     return matches

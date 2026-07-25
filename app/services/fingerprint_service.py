@@ -34,19 +34,23 @@ from app.schemas.fingerprint import (
 
 # Allowed file extensions
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mkv", ".mov", ".webm", ".flv"}
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".jfif"}
 ALLOWED_EXTENSIONS = VIDEO_EXTENSIONS | IMAGE_EXTENSIONS
 
 # Max file size (bytes)
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
 
 
-def process_fingerprint(media_id: str, file_bytes: bytes, filename: str) -> FingerprintResponse:
+def process_fingerprint(
+    media_id: str, creator_id: str, file_bytes: bytes, filename: str
+) -> FingerprintResponse:
     """
     Xử lý fingerprint cho 1 video/ảnh.
 
     Args:
         media_id: ID video/ảnh.
+        creator_id: ID creator sở hữu media này — dùng để loại trừ so khớp trong
+            cùng creator (không tự báo "vi phạm" nội dung của chính mình).
         file_bytes: Nội dung file.
         filename: Tên file gốc (để xác định loại).
 
@@ -74,11 +78,11 @@ def process_fingerprint(media_id: str, file_bytes: bytes, filename: str) -> Fing
     # Xóa fingerprint cũ nếu media_id đã tồn tại (upsert)
     delete_by_media_id(media_id)
 
-    # Tìm trùng trong Milvus
-    violations = _find_violations(fingerprints, exclude_media_id=media_id)
+    # Tìm trùng trong Milvus — loại trừ chính creator này (xem docstring hàm).
+    violations = _find_violations(fingerprints, exclude_media_id=media_id, exclude_creator_id=creator_id)
 
     # Lưu fingerprints mới vào Milvus
-    insert_fingerprints(media_id, fingerprints)
+    insert_fingerprints(media_id, creator_id, fingerprints)
 
     # Tạo Content ID
     content_id = f"CID-{media_id}"
@@ -173,8 +177,10 @@ def _process_image(file_bytes: bytes) -> list[dict]:
     return [{"timestamp": 0.0, "vector": vector}]
 
 
-def _find_violations(fingerprints: list[dict], exclude_media_id: str) -> list[dict]:
-    """Tìm đoạn trùng trong Milvus."""
+def _find_violations(
+    fingerprints: list[dict], exclude_media_id: str, exclude_creator_id: str = ""
+) -> list[dict]:
+    """Tìm đoạn trùng trong Milvus (loại trừ cùng creator — xem match_segments)."""
     if not fingerprints:
         return []
 
@@ -191,4 +197,5 @@ def _find_violations(fingerprints: list[dict], exclude_media_id: str) -> list[di
         query_fingerprints=fingerprints,
         search_results=search_results,
         exclude_media_id=exclude_media_id,
+        exclude_creator_id=exclude_creator_id,
     )
