@@ -66,12 +66,22 @@ async def consume_loop():
         f"[{TOPIC_PIPELINE_JOB}, {TOPIC_MODERATION_JOB}, {TOPIC_RECOMMENDATION_SYNC}, {TOPIC_MEDIA_DELETE}]"
     )
 
+    # Kết nối TCP tới Aiven Kafka có thể bị NAT/firewall âm thầm cắt khi idle lâu
+    # (không có FIN/RST báo về) — nếu không bọc timeout, await getmany()/commit() có
+    # thể treo VÔ THỜI HẠN (đã xảy ra thật: treo 7+ tiếng, không lỗi, không crash, không
+    # job nào được xử lý tiếp). Bọc timeout cứng để biến "treo im lặng" thành lỗi rõ
+    # ràng, cho phép supervisor bên ngoài (main.py) phát hiện và tự kết nối lại.
+    NETWORK_CALL_TIMEOUT_SECONDS = 30
+
     try:
         while True:
             # Lấy 1 batch message thay vì từng cái — cho phép xử lý song song trong
             # cùng 1 consumer, tránh episode nhiều trang (100 job Content ID + 100 job
             # Kiểm duyệt) phải xếp hàng tuần tự dù mỗi job riêng lẻ chỉ mất vài giây.
-            batches = await consumer.getmany(timeout_ms=1000, max_records=10)
+            batches = await asyncio.wait_for(
+                consumer.getmany(timeout_ms=1000, max_records=10),
+                timeout=NETWORK_CALL_TIMEOUT_SECONDS,
+            )
             if not batches:
                 continue
 
@@ -86,7 +96,13 @@ async def consume_loop():
             # về BE bên trong _dispatch_job, không throw ra đây) — nếu crash giữa batch,
             # message chưa commit sẽ được Kafka redeliver; các _process_* đều idempotent
             # (gửi lại cùng 1 kết quả cho BE) nên an toàn khi bị xử lý lại.
-            await consumer.commit()
+            await asyncio.wait_for(consumer.commit(), timeout=NETWORK_CALL_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.error(
+            f"Kafka consumer hung for >{NETWORK_CALL_TIMEOUT_SECONDS}s (connection likely "
+            "dead) — forcing reconnect"
+        )
+        raise
     finally:
         await consumer.stop()
         logger.info("Kafka consumer stopped")

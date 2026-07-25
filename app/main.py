@@ -61,7 +61,7 @@ async def lifespan(application: FastAPI):
 
     # 7. Kafka producer + consumer (content pipeline)
     await start_producer()
-    consumer_task = asyncio.create_task(consume_loop())
+    consumer_task = asyncio.create_task(_run_consumer_forever())
 
     logger.info("TaleX AI Service ready!")
 
@@ -72,6 +72,25 @@ async def lifespan(application: FastAPI):
     consumer_task.cancel()
     await stop_producer()
     await close_mongodb()
+
+
+async def _run_consumer_forever():
+    """
+    Supervisor cho consume_loop() — trước đây chạy qua asyncio.create_task() một lần
+    duy nhất, không ai await/kiểm tra kết quả: nếu consume_loop() treo (kết nối TCP
+    chết âm thầm) hoặc crash vì exception, task chết luôn không ai biết, consumer
+    ngừng xử lý job vĩnh viễn mà service vẫn báo "khỏe" bình thường. Vòng lặp này tự
+    khởi động lại consume_loop() (tạo AIOKafkaConsumer mới, ép kết nối TCP mới) mỗi khi
+    nó dừng vì bất kỳ lý do gì.
+    """
+    while True:
+        try:
+            await consume_loop()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Kafka consumer loop crashed, restarting in 5s: {e}", exc_info=True)
+        await asyncio.sleep(5)
 
 
 def _seed_data():
