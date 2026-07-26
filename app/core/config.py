@@ -53,6 +53,12 @@ class Settings:
     FINGERPRINT_MIN_MATCH_SECONDS: int = int(os.getenv("FINGERPRINT_MIN_MATCH_SECONDS", "5"))
     FINGERPRINT_MAX_GAP_SECONDS: int = int(os.getenv("FINGERPRINT_MAX_GAP_SECONDS", "2"))
     FINGERPRINT_MAX_FILE_SIZE_MB: int = int(os.getenv("FINGERPRINT_MAX_FILE_SIZE_MB", "100"))
+    # Giới hạn tổng số frame trích xuất để tạo fingerprint — không có cap này, video dài
+    # (vd 1 tiếng) ở FPS mặc định sinh ra hàng nghìn frame, mỗi frame là 1 vector Milvus,
+    # làm chậm xử lý và phình dữ liệu không cần thiết. Giống REKOGNITION_MAX_FRAMES bên
+    # kiểm duyệt nhưng nhiều hơn — fingerprint cần rải đều khắp video để bắt đúng đoạn
+    # trùng, không chỉ lấy mẫu để phân loại như kiểm duyệt.
+    FINGERPRINT_MAX_FRAMES: int = int(os.getenv("FINGERPRINT_MAX_FRAMES", "300"))
 
     # Kafka (Aiven)
     KAFKA_BOOTSTRAP_SERVERS: str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "")
