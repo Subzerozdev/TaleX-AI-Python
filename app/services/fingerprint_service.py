@@ -186,8 +186,10 @@ def _find_violations(
 
     vectors = [fp["vector"] for fp in fingerprints]
 
-    # Search Milvus
-    search_results = search_similar(vectors, top_k=3)
+    # Search Milvus — loại trừ cùng creator NGAY TẠI Milvus (xem docstring search_similar),
+    # không chỉ lọc sau ở matcher.py, để không bỏ sót vi phạm thật với creator khác bị các
+    # trang cũ của chính creator này chiếm hết chỗ trong top_k.
+    search_results = search_similar(vectors, top_k=3, exclude_creator_id=exclude_creator_id or None)
 
     if not search_results:
         return []

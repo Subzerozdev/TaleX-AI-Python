@@ -1,10 +1,20 @@
 """S3 download client for content pipeline."""
 
 import boto3
+from botocore.config import Config
 from loguru import logger
 from app.core.config import settings
 
 _s3_client = None
+
+# asyncio.wait_for(timeout=60s) bọc quanh mỗi job (kafka_consumer_service.py) chỉ hủy
+# việc CHỜ — không ép dừng được thread thật đang chạy lời gọi boto3 bên dưới. Mặc định
+# boto3 là connect_timeout=60s + read_timeout=60s MỖI request, cộng thêm vài lần retry
+# tự động, nên 1 request thật sự bị treo có thể chạy ngầm nhiều phút sau khi job đã
+# "timeout" ở tầng trên — nhiều job dồn lại kiểu này có thể chiếm hết thread pool mặc
+# định (dùng chung cho MỌI asyncio.to_thread trong app). Set timeout ngắn hơn ở đây để
+# request tự bỏ cuộc nhanh, giảm thời gian thread bị "mắc kẹt".
+_BOTO_CONFIG = Config(connect_timeout=10, read_timeout=20, retries={"max_attempts": 2, "mode": "standard"})
 
 
 def get_s3_client():
@@ -16,6 +26,7 @@ def get_s3_client():
             region_name=settings.AWS_REGION,
             aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
             aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+            config=_BOTO_CONFIG,
         )
     return _s3_client
 

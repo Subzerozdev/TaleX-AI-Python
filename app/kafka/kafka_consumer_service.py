@@ -112,19 +112,83 @@ async def consume_loop():
 # Đặt ở module-level để chặn đúng across nhiều batch liền kề, không chỉ trong 1 batch.
 _JOB_SEMAPHORE = asyncio.Semaphore(8)
 
+# consume_loop() dùng asyncio.gather() đợi TOÀN BỘ job trong 1 batch xong mới commit() rồi
+# mới getmany() batch tiếp — nếu 1 job treo vô thời hạn (mạng chập chờn khi gọi S3/Rekognition,
+# hay gặp khi test qua mạng nhà thay vì mạng data center), cả batch bị kẹt theo, các job khác
+# (dù đã sẵn sàng xử lý) phải xếp hàng chờ — quan sát thấy thật: khoảng cách giữa các job giãn
+# dần rồi dồn cục khi test 30 ảnh. Timeout này ép 1 job hung phải thất bại rõ ràng (gửi lỗi về
+# BE để retry) thay vì treo mãi, không chặn các job khác trong cùng batch.
+#
+# VIDEO cần timeout riêng, DÀI HƠN — với FINGERPRINT_MAX_FRAMES=300, trích frame (ffmpeg tự
+# cho tới 120s, xem extractor.py) + hash + insert/search Milvus cho từng đó frame có thể mất
+# hơn 60s một cách HỢP LỆ, không phải bị treo. Dùng chung 1 timeout cho ảnh lẫn video sẽ báo
+# lỗi oan cho video hợp lệ (job "timeout" trong khi ffmpeg bên dưới vẫn đang chạy đúng).
+_JOB_PROCESSING_TIMEOUT_SECONDS = 60
+_VIDEO_JOB_PROCESSING_TIMEOUT_SECONDS = 180
+
+
+def _copyright_error_result(media_id: str, correlation_id: str, error_message: str) -> dict:
+    return {
+        "mediaId": media_id,
+        "correlationId": correlation_id,
+        "contentId": None,
+        "isDuplicate": False,
+        "overallSimilarity": 0.0,
+        "fingerprintCount": 0,
+        "violations": [],
+        "processedAt": datetime.utcnow().isoformat(),
+        "success": False,
+        "errorMessage": error_message,
+    }
+
+
+def _moderation_error_result(media_id: str, correlation_id: str, error_message: str) -> dict:
+    return {
+        "mediaId": media_id,
+        "correlationId": correlation_id,
+        "isSafe": False,
+        "primaryLabel": None,
+        "confidenceScore": 0.0,
+        "violations": [],
+        "rawResponse": "",
+        "processedAt": datetime.utcnow().isoformat(),
+        "success": False,
+        "errorMessage": error_message,
+    }
+
+
+async def _send_hung_job_error_result(msg, timeout_used: int):
+    """Job bị timeout — gửi kết quả lỗi về BE bằng dữ liệu thô từ msg.value, vì handler thật
+    (đã bị hủy do timeout) chưa kịp validate/trả về gì."""
+    data = msg.value
+    media_id = data.get("mediaId")
+    if not media_id:
+        return
+    correlation_id = data.get("correlationId") or ""
+    error_message = f"Job xử lý quá {timeout_used}s — có thể do mạng treo khi gọi S3/Rekognition"
+    if msg.topic == TOPIC_PIPELINE_JOB:
+        await send_copyright_result(media_id, _copyright_error_result(media_id, correlation_id, error_message))
+    elif msg.topic == TOPIC_MODERATION_JOB:
+        await send_moderation_result(media_id, _moderation_error_result(media_id, correlation_id, error_message))
+
 
 async def _dispatch_job(msg):
     """Route 1 Kafka message tới handler tương ứng, giới hạn concurrency bằng semaphore."""
     async with _JOB_SEMAPHORE:
+        is_video = isinstance(msg.value, dict) and msg.value.get("mediaType") == "VIDEO"
+        timeout = _VIDEO_JOB_PROCESSING_TIMEOUT_SECONDS if is_video else _JOB_PROCESSING_TIMEOUT_SECONDS
         try:
             if msg.topic == TOPIC_PIPELINE_JOB:
-                await _process_pipeline_job(msg.value)
+                await asyncio.wait_for(_process_pipeline_job(msg.value), timeout=timeout)
             elif msg.topic == TOPIC_MODERATION_JOB:
-                await _process_moderation_job(msg.value)
+                await asyncio.wait_for(_process_moderation_job(msg.value), timeout=timeout)
             elif msg.topic == TOPIC_RECOMMENDATION_SYNC:
-                await _process_debezium_series(msg.value)
+                await asyncio.wait_for(_process_debezium_series(msg.value), timeout=_JOB_PROCESSING_TIMEOUT_SECONDS)
             elif msg.topic == TOPIC_MEDIA_DELETE:
-                await _process_media_delete(msg.value)
+                await asyncio.wait_for(_process_media_delete(msg.value), timeout=_JOB_PROCESSING_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            logger.error(f"Job processing timed out after {timeout}s (topic={msg.topic})")
+            await _send_hung_job_error_result(msg, timeout)
         except Exception as e:
             logger.error(f"Job processing failed (topic={msg.topic}): {e}", exc_info=True)
 
@@ -140,18 +204,10 @@ async def _process_pipeline_job(data: dict):
         logger.error(f"Invalid pipeline job message: {e}")
         media_id = data.get("mediaId")
         if media_id:
-            await send_copyright_result(media_id, {
-                "mediaId": media_id,
-                "correlationId": data.get("correlationId") or "",
-                "contentId": None,
-                "isDuplicate": False,
-                "overallSimilarity": 0.0,
-                "fingerprintCount": 0,
-                "violations": [],
-                "processedAt": datetime.utcnow().isoformat(),
-                "success": False,
-                "errorMessage": f"Invalid job message: {e}",
-            })
+            await send_copyright_result(
+                media_id,
+                _copyright_error_result(media_id, data.get("correlationId") or "", f"Invalid job message: {e}"),
+            )
         return
     logger.info(f"Processing pipeline job: mediaId={job.media_id}, type={job.media_type}")
 
@@ -162,17 +218,24 @@ async def _process_pipeline_job(data: dict):
         file_bytes = await asyncio.to_thread(download_from_s3, job.s3_key, job.s3_bucket)
         filename = job.s3_key.rsplit("/", 1)[-1] if "/" in job.s3_key else job.s3_key
 
-        # Generate Preview
+        # Generate Preview — bọc asyncio.to_thread giống download_from_s3 ở trên. Trước đây
+        # gọi trực tiếp (đồng bộ): blur ảnh (CPU) và đặc biệt ffmpeg cắt video preview có
+        # thể chạy vài giây, chặn đứng TOÀN BỘ event loop trong lúc đó — không chỉ job này,
+        # mà cả 7 job khác đang chạy song song trong cùng semaphore, lẫn heartbeat Kafka.
         preview_s3_key = None
         try:
             if job.media_type == "IMAGE":
-                preview_bytes = generate_image_preview(file_bytes)
+                preview_bytes = await asyncio.to_thread(generate_image_preview, file_bytes)
                 preview_s3_key = f"images/previews/{job.media_id}.jpg"
-                upload_to_s3(preview_s3_key, preview_bytes, content_type="image/jpeg", bucket=job.s3_bucket)
+                await asyncio.to_thread(
+                    upload_to_s3, preview_s3_key, preview_bytes, content_type="image/jpeg", bucket=job.s3_bucket
+                )
             elif job.media_type == "VIDEO":
-                preview_bytes = generate_video_preview(file_bytes)
+                preview_bytes = await asyncio.to_thread(generate_video_preview, file_bytes)
                 preview_s3_key = f"videos/previews/{job.media_id}.mp4"
-                upload_to_s3(preview_s3_key, preview_bytes, content_type="video/mp4", bucket=job.s3_bucket)
+                await asyncio.to_thread(
+                    upload_to_s3, preview_s3_key, preview_bytes, content_type="video/mp4", bucket=job.s3_bucket
+                )
         except Exception as pe:
             logger.error(f"Failed to generate preview for {job.media_id}: {pe}")
             # We don't fail the entire job if preview fails
@@ -211,19 +274,10 @@ async def _process_pipeline_job(data: dict):
 
     except Exception as e:
         logger.error(f"Fingerprint failed for mediaId={job.media_id}: {e}")
-        error_result = {
-            "mediaId": job.media_id,
-            "correlationId": job.correlation_id,
-            "contentId": None,
-            "isDuplicate": False,
-            "overallSimilarity": 0.0,
-            "fingerprintCount": 0,
-            "violations": [],
-            "processedAt": datetime.utcnow().isoformat(),
-            "success": False,
-            "errorMessage": str(e),
-        }
-        await send_copyright_result(job.media_id, error_result)
+        await send_copyright_result(
+            job.media_id,
+            _copyright_error_result(job.media_id, job.correlation_id, str(e)),
+        )
 
 
 async def _process_debezium_series(data: dict):
@@ -315,18 +369,10 @@ async def _process_moderation_job(data: dict):
         logger.error(f"Invalid moderation job message: {e}")
         media_id = data.get("mediaId")
         if media_id:
-            await send_moderation_result(media_id, {
-                "mediaId": media_id,
-                "correlationId": data.get("correlationId") or "",
-                "isSafe": False,
-                "primaryLabel": None,
-                "confidenceScore": 0.0,
-                "violations": [],
-                "rawResponse": "",
-                "processedAt": datetime.utcnow().isoformat(),
-                "success": False,
-                "errorMessage": f"Invalid job message: {e}",
-            })
+            await send_moderation_result(
+                media_id,
+                _moderation_error_result(media_id, data.get("correlationId") or "", f"Invalid job message: {e}"),
+            )
         return
     logger.info(f"Processing moderation job: mediaId={job.media_id}, type={job.media_type}")
 
@@ -340,19 +386,10 @@ async def _process_moderation_job(data: dict):
         await send_moderation_result(job.media_id, result)
     except Exception as e:
         logger.error(f"Moderation failed for mediaId={job.media_id}: {e}")
-        error_result = {
-            "mediaId": job.media_id,
-            "correlationId": job.correlation_id,
-            "isSafe": False,
-            "primaryLabel": None,
-            "confidenceScore": 0.0,
-            "violations": [],
-            "rawResponse": "",
-            "processedAt": datetime.utcnow().isoformat(),
-            "success": False,
-            "errorMessage": str(e),
-        }
-        await send_moderation_result(job.media_id, error_result)
+        await send_moderation_result(
+            job.media_id,
+            _moderation_error_result(job.media_id, job.correlation_id, str(e)),
+        )
 
 
 async def _process_media_delete(data: dict):
