@@ -12,6 +12,9 @@ services:
     env_file:
       - .env
     environment:
+      # Log theo giờ Việt Nam thay vì UTC mặc định của container — dễ đối chiếu log
+      # lúc test local với thời điểm thao tác thật trên FE.
+      - TZ=Asia/Ho_Chi_Minh
       # Override for Docker internal networking
       - MILVUS_HOST=milvus
     volumes:
@@ -36,6 +39,11 @@ services:
       milvus:
         condition: service_healthy
     restart: unless-stopped
+    # Cho consumer đủ thời gian gửi LeaveGroup sạch tới Aiven Kafka trước khi bị kill —
+    # thiếu cái này, mỗi lần restart/deploy container cũ thành "zombie member" còn giữ
+    # quyền sở hữu partition tới khi hết session timeout, khiến message rơi vào đúng
+    # partition đó bị treo chờ rebalance (đã gặp thật lúc test local, xem docs debug).
+    stop_grace_period: 20s
 
   # === Container 2: Milvus Vector Database ===
   milvus:
