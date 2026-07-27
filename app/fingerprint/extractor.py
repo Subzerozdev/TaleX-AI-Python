@@ -45,16 +45,25 @@ def extract_frames_from_video(file_bytes: bytes) -> list[dict]:
         if duration <= 0:
             raise ValueError("Không thể xác định độ dài video.")
 
-        logger.info(f"Extractor: video duration={duration:.1f}s, fps={settings.FINGERPRINT_FPS}")
+        # Video dài hơn FINGERPRINT_MAX_FRAMES giây (ở FPS mặc định) thì giảm fps hiệu
+        # quả để rải đều frame khắp video thay vì chỉ lấy được đoạn đầu — giữ đúng hành
+        # vi cũ cho video ngắn (fps = FINGERPRINT_FPS), chỉ giảm khi thật sự cần.
+        effective_fps = settings.FINGERPRINT_FPS
+        if duration * effective_fps > settings.FINGERPRINT_MAX_FRAMES:
+            effective_fps = settings.FINGERPRINT_MAX_FRAMES / duration
+
+        logger.info(f"Extractor: video duration={duration:.1f}s, fps={effective_fps:.4f}")
 
         # Trích xuất frames bằng FFmpeg
-        # -vf fps=1: lấy 1 frame mỗi giây
+        # -vf fps=X: lấy X frame mỗi giây (đã điều chỉnh để không vượt quá cap)
+        # -frames:v: chốt cứng tổng số frame, phòng trường hợp làm tròn fps vẫn dư 1-2 frame
         # -f image2pipe: output ra pipe (stdout) dạng ảnh
         # -vcodec png: format PNG
         cmd = [
             "ffmpeg",
             "-i", tmp_path,
-            "-vf", f"fps={settings.FINGERPRINT_FPS}",
+            "-vf", f"fps={effective_fps}",
+            "-frames:v", str(settings.FINGERPRINT_MAX_FRAMES),
             "-f", "image2pipe",
             "-vcodec", "png",
             "-loglevel", "error",
@@ -69,7 +78,7 @@ def extract_frames_from_video(file_bytes: bytes) -> list[dict]:
 
         # Parse output: FFmpeg ghi nhiều PNG liên tiếp vào stdout
         raw_data = result.stdout
-        frames = _parse_png_stream(raw_data, duration)
+        frames = _parse_png_stream(raw_data, effective_fps)
 
         logger.info(f"Extractor: extracted {len(frames)} frames")
 
@@ -115,12 +124,19 @@ def _get_video_duration(file_path: str) -> float:
         return 0.0
 
 
-def _parse_png_stream(raw_data: bytes, duration: float) -> list[dict]:
+def _parse_png_stream(raw_data: bytes, fps: float) -> list[dict]:
     """
     Parse chuỗi PNG liên tiếp từ FFmpeg stdout.
 
     FFmpeg ghi nhiều file PNG nối nhau vào stdout.
     Mỗi PNG bắt đầu bằng PNG header: b'\\x89PNG'
+
+    Args:
+        fps: fps THẬT SỰ dùng khi trích xuất (có thể đã giảm so với
+            settings.FINGERPRINT_FPS nếu video dài — xem extract_frames_from_video) —
+            dùng để tính đúng timestamp, trước đây hàm này nhận `duration` nhưng
+            không hề dùng tới, luôn tính timestamp theo settings.FINGERPRINT_FPS gốc,
+            sai lệch nếu fps đã bị điều chỉnh.
     """
     frames = []
     png_header = b"\x89PNG"
@@ -142,7 +158,7 @@ def _parse_png_stream(raw_data: bytes, duration: float) -> list[dict]:
 
         try:
             image = Image.open(BytesIO(png_bytes)).convert("RGB")
-            timestamp = float(i) / settings.FINGERPRINT_FPS
+            timestamp = float(i) / fps
             frames.append({"timestamp": timestamp, "image": image})
         except Exception:
             continue

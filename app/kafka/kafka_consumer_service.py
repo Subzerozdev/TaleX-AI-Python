@@ -1,5 +1,6 @@
 """Kafka consumer — receive pipeline jobs from Spring Boot, process, send results."""
 
+import asyncio
 import json
 import ssl
 from datetime import datetime
@@ -7,15 +8,20 @@ from datetime import datetime
 from aiokafka import AIOKafkaConsumer
 from loguru import logger
 
-from app.aws.s3_client import download_from_s3
+from app.aws.s3_client import download_from_s3, upload_to_s3
 from app.core.config import settings
-from app.kafka.kafka_config import TOPIC_PIPELINE_JOB, TOPIC_MODERATION_JOB, TOPIC_RECOMMENDATION_SYNC
+from app.kafka.kafka_config import (
+    TOPIC_PIPELINE_JOB,
+    TOPIC_MODERATION_JOB,
+    TOPIC_RECOMMENDATION_SYNC,
+    TOPIC_MEDIA_DELETE,
+)
 from app.kafka.kafka_producer_service import send_copyright_result, send_moderation_result
 from app.schemas.kafka_messages import PipelineJobMessage
-from app.services.fingerprint_service import process_fingerprint
+from app.services.fingerprint_service import process_fingerprint, delete_fingerprint
 from app.services.video_moderation_service import moderate_media
 from app.services.recommendation_service import process_series_upsert
-
+from app.services.preview_service import generate_image_preview, generate_video_preview
 
 def _build_ssl_context() -> ssl.SSLContext | None:
     """Build SSL context from Aiven PEM cert paths."""
@@ -41,45 +47,203 @@ async def consume_loop():
         "group_id": settings.KAFKA_CONSUMER_GROUP,
         "value_deserializer": lambda v: json.loads(v.decode("utf-8")),
         "auto_offset_reset": "earliest",
-        "enable_auto_commit": True,
+        # Commit thủ công sau khi xử lý xong (xem bên dưới) — auto-commit theo thời
+        # gian có thể đánh dấu "đã đọc" một job đang xử lý dở, nếu service crash/restart
+        # đúng lúc đó thì job bị mất vĩnh viễn, không retry, không báo lỗi cho BE.
+        "enable_auto_commit": False,
         "max_poll_interval_ms": 300000,
     }
     if ssl_ctx:
         kwargs["security_protocol"] = "SSL"
         kwargs["ssl_context"] = ssl_ctx
 
-    consumer = AIOKafkaConsumer(TOPIC_PIPELINE_JOB, TOPIC_MODERATION_JOB, TOPIC_RECOMMENDATION_SYNC, **kwargs)
+    consumer = AIOKafkaConsumer(
+        TOPIC_PIPELINE_JOB, TOPIC_MODERATION_JOB, TOPIC_RECOMMENDATION_SYNC, TOPIC_MEDIA_DELETE, **kwargs
+    )
     await consumer.start()
-    logger.info(f"Kafka consumer started — listening on [{TOPIC_PIPELINE_JOB}, {TOPIC_MODERATION_JOB}, {TOPIC_RECOMMENDATION_SYNC}]")
+    logger.info(
+        f"Kafka consumer started — listening on "
+        f"[{TOPIC_PIPELINE_JOB}, {TOPIC_MODERATION_JOB}, {TOPIC_RECOMMENDATION_SYNC}, {TOPIC_MEDIA_DELETE}]"
+    )
+
+    # Kết nối TCP tới Aiven Kafka có thể bị NAT/firewall âm thầm cắt khi idle lâu
+    # (không có FIN/RST báo về) — nếu không bọc timeout, await getmany()/commit() có
+    # thể treo VÔ THỜI HẠN (đã xảy ra thật: treo 7+ tiếng, không lỗi, không crash, không
+    # job nào được xử lý tiếp). Bọc timeout cứng để biến "treo im lặng" thành lỗi rõ
+    # ràng, cho phép supervisor bên ngoài (main.py) phát hiện và tự kết nối lại.
+    NETWORK_CALL_TIMEOUT_SECONDS = 30
 
     try:
-        async for msg in consumer:
-            try:
-                if msg.topic == TOPIC_PIPELINE_JOB:
-                    await _process_pipeline_job(msg.value)
-                elif msg.topic == TOPIC_MODERATION_JOB:
-                    await _process_moderation_job(msg.value)
-                elif msg.topic == TOPIC_RECOMMENDATION_SYNC:
-                    await _process_debezium_series(msg.value)
-            except Exception as e:
-                logger.error(f"Job processing failed (topic={msg.topic}): {e}", exc_info=True)
+        while True:
+            # Lấy 1 batch message thay vì từng cái — cho phép xử lý song song trong
+            # cùng 1 consumer, tránh episode nhiều trang (100 job Content ID + 100 job
+            # Kiểm duyệt) phải xếp hàng tuần tự dù mỗi job riêng lẻ chỉ mất vài giây.
+            batches = await asyncio.wait_for(
+                consumer.getmany(timeout_ms=1000, max_records=10),
+                timeout=NETWORK_CALL_TIMEOUT_SECONDS,
+            )
+            if not batches:
+                continue
+
+            tasks = [
+                _dispatch_job(msg)
+                for messages in batches.values()
+                for msg in messages
+            ]
+            await asyncio.gather(*tasks)
+
+            # Commit sau khi CẢ BATCH xử lý xong (lỗi từng job đã tự gửi error-result
+            # về BE bên trong _dispatch_job, không throw ra đây) — nếu crash giữa batch,
+            # message chưa commit sẽ được Kafka redeliver; các _process_* đều idempotent
+            # (gửi lại cùng 1 kết quả cho BE) nên an toàn khi bị xử lý lại.
+            await asyncio.wait_for(consumer.commit(), timeout=NETWORK_CALL_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.error(
+            f"Kafka consumer hung for >{NETWORK_CALL_TIMEOUT_SECONDS}s (connection likely "
+            "dead) — forcing reconnect"
+        )
+        raise
     finally:
         await consumer.stop()
         logger.info("Kafka consumer stopped")
 
 
+# Giới hạn số job chạy song song cùng lúc (tránh làm quá tải Rekognition/Milvus/S3).
+# Đặt ở module-level để chặn đúng across nhiều batch liền kề, không chỉ trong 1 batch.
+_JOB_SEMAPHORE = asyncio.Semaphore(8)
+
+# consume_loop() dùng asyncio.gather() đợi TOÀN BỘ job trong 1 batch xong mới commit() rồi
+# mới getmany() batch tiếp — nếu 1 job treo vô thời hạn (mạng chập chờn khi gọi S3/Rekognition,
+# hay gặp khi test qua mạng nhà thay vì mạng data center), cả batch bị kẹt theo, các job khác
+# (dù đã sẵn sàng xử lý) phải xếp hàng chờ — quan sát thấy thật: khoảng cách giữa các job giãn
+# dần rồi dồn cục khi test 30 ảnh. Timeout này ép 1 job hung phải thất bại rõ ràng (gửi lỗi về
+# BE để retry) thay vì treo mãi, không chặn các job khác trong cùng batch.
+#
+# VIDEO cần timeout riêng, DÀI HƠN — với FINGERPRINT_MAX_FRAMES=300, trích frame (ffmpeg tự
+# cho tới 120s, xem extractor.py) + hash + insert/search Milvus cho từng đó frame có thể mất
+# hơn 60s một cách HỢP LỆ, không phải bị treo. Dùng chung 1 timeout cho ảnh lẫn video sẽ báo
+# lỗi oan cho video hợp lệ (job "timeout" trong khi ffmpeg bên dưới vẫn đang chạy đúng).
+_JOB_PROCESSING_TIMEOUT_SECONDS = 60
+_VIDEO_JOB_PROCESSING_TIMEOUT_SECONDS = 180
+
+
+def _copyright_error_result(media_id: str, correlation_id: str, error_message: str) -> dict:
+    return {
+        "mediaId": media_id,
+        "correlationId": correlation_id,
+        "contentId": None,
+        "isDuplicate": False,
+        "overallSimilarity": 0.0,
+        "fingerprintCount": 0,
+        "violations": [],
+        "processedAt": datetime.utcnow().isoformat(),
+        "success": False,
+        "errorMessage": error_message,
+    }
+
+
+def _moderation_error_result(media_id: str, correlation_id: str, error_message: str) -> dict:
+    return {
+        "mediaId": media_id,
+        "correlationId": correlation_id,
+        "isSafe": False,
+        "primaryLabel": None,
+        "confidenceScore": 0.0,
+        "violations": [],
+        "rawResponse": "",
+        "processedAt": datetime.utcnow().isoformat(),
+        "success": False,
+        "errorMessage": error_message,
+    }
+
+
+async def _send_hung_job_error_result(msg, timeout_used: int):
+    """Job bị timeout — gửi kết quả lỗi về BE bằng dữ liệu thô từ msg.value, vì handler thật
+    (đã bị hủy do timeout) chưa kịp validate/trả về gì."""
+    data = msg.value
+    media_id = data.get("mediaId")
+    if not media_id:
+        return
+    correlation_id = data.get("correlationId") or ""
+    error_message = f"Job xử lý quá {timeout_used}s — có thể do mạng treo khi gọi S3/Rekognition"
+    if msg.topic == TOPIC_PIPELINE_JOB:
+        await send_copyright_result(media_id, _copyright_error_result(media_id, correlation_id, error_message))
+    elif msg.topic == TOPIC_MODERATION_JOB:
+        await send_moderation_result(media_id, _moderation_error_result(media_id, correlation_id, error_message))
+
+
+async def _dispatch_job(msg):
+    """Route 1 Kafka message tới handler tương ứng, giới hạn concurrency bằng semaphore."""
+    async with _JOB_SEMAPHORE:
+        is_video = isinstance(msg.value, dict) and msg.value.get("mediaType") == "VIDEO"
+        timeout = _VIDEO_JOB_PROCESSING_TIMEOUT_SECONDS if is_video else _JOB_PROCESSING_TIMEOUT_SECONDS
+        try:
+            if msg.topic == TOPIC_PIPELINE_JOB:
+                await asyncio.wait_for(_process_pipeline_job(msg.value), timeout=timeout)
+            elif msg.topic == TOPIC_MODERATION_JOB:
+                await asyncio.wait_for(_process_moderation_job(msg.value), timeout=timeout)
+            elif msg.topic == TOPIC_RECOMMENDATION_SYNC:
+                await asyncio.wait_for(_process_debezium_series(msg.value), timeout=_JOB_PROCESSING_TIMEOUT_SECONDS)
+            elif msg.topic == TOPIC_MEDIA_DELETE:
+                await asyncio.wait_for(_process_media_delete(msg.value), timeout=_JOB_PROCESSING_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            logger.error(f"Job processing timed out after {timeout}s (topic={msg.topic})")
+            await _send_hung_job_error_result(msg, timeout)
+        except Exception as e:
+            logger.error(f"Job processing failed (topic={msg.topic}): {e}", exc_info=True)
+
+
 async def _process_pipeline_job(data: dict):
     """Process a single pipeline job: download from S3, fingerprint, send result."""
-    job = PipelineJobMessage.model_validate(data)
+    try:
+        job = PipelineJobMessage.model_validate(data)
+    except Exception as e:
+        # Message sai schema (vd thiếu field bắt buộc) — phải gửi lỗi về BE ngay ở đây,
+        # nếu không throw ra ngoài sẽ bị _dispatch_job() nuốt mất, BE không bao giờ nhận
+        # được kết quả, media kẹt vĩnh viễn ở trạng thái đang xử lý.
+        logger.error(f"Invalid pipeline job message: {e}")
+        media_id = data.get("mediaId")
+        if media_id:
+            await send_copyright_result(
+                media_id,
+                _copyright_error_result(media_id, data.get("correlationId") or "", f"Invalid job message: {e}"),
+            )
+        return
     logger.info(f"Processing pipeline job: mediaId={job.media_id}, type={job.media_type}")
 
     try:
-        # Download file from S3
-        file_bytes = download_from_s3(job.s3_key, job.s3_bucket)
+        # Blocking S3/CPU work — run in a thread so it doesn't stall the event loop
+        # and starve the Kafka consumer's heartbeat, which causes session timeouts
+        # and endless redelivery of the same message.
+        file_bytes = await asyncio.to_thread(download_from_s3, job.s3_key, job.s3_bucket)
         filename = job.s3_key.rsplit("/", 1)[-1] if "/" in job.s3_key else job.s3_key
 
+        # Generate Preview — bọc asyncio.to_thread giống download_from_s3 ở trên. Trước đây
+        # gọi trực tiếp (đồng bộ): blur ảnh (CPU) và đặc biệt ffmpeg cắt video preview có
+        # thể chạy vài giây, chặn đứng TOÀN BỘ event loop trong lúc đó — không chỉ job này,
+        # mà cả 7 job khác đang chạy song song trong cùng semaphore, lẫn heartbeat Kafka.
+        preview_s3_key = None
+        try:
+            if job.media_type == "IMAGE":
+                preview_bytes = await asyncio.to_thread(generate_image_preview, file_bytes)
+                preview_s3_key = f"images/previews/{job.media_id}.jpg"
+                await asyncio.to_thread(
+                    upload_to_s3, preview_s3_key, preview_bytes, content_type="image/jpeg", bucket=job.s3_bucket
+                )
+            elif job.media_type == "VIDEO":
+                preview_bytes = await asyncio.to_thread(generate_video_preview, file_bytes)
+                preview_s3_key = f"videos/previews/{job.media_id}.mp4"
+                await asyncio.to_thread(
+                    upload_to_s3, preview_s3_key, preview_bytes, content_type="video/mp4", bucket=job.s3_bucket
+                )
+        except Exception as pe:
+            logger.error(f"Failed to generate preview for {job.media_id}: {pe}")
+            # We don't fail the entire job if preview fails
+
         # Run fingerprint pipeline
-        response = process_fingerprint(job.media_id, file_bytes, filename)
+        response = await asyncio.to_thread(
+            process_fingerprint, job.media_id, job.creator_id, file_bytes, filename
+        )
 
         # Build camelCase result for Spring Boot
         result = {
@@ -104,24 +268,16 @@ async def _process_pipeline_job(data: dict):
             "processedAt": datetime.utcnow().isoformat(),
             "success": True,
             "errorMessage": None,
+            "previewS3Key": preview_s3_key,
         }
         await send_copyright_result(job.media_id, result)
 
     except Exception as e:
         logger.error(f"Fingerprint failed for mediaId={job.media_id}: {e}")
-        error_result = {
-            "mediaId": job.media_id,
-            "correlationId": job.correlation_id,
-            "contentId": None,
-            "isDuplicate": False,
-            "overallSimilarity": 0.0,
-            "fingerprintCount": 0,
-            "violations": [],
-            "processedAt": datetime.utcnow().isoformat(),
-            "success": False,
-            "errorMessage": str(e),
-        }
-        await send_copyright_result(job.media_id, error_result)
+        await send_copyright_result(
+            job.media_id,
+            _copyright_error_result(job.media_id, job.correlation_id, str(e)),
+        )
 
 
 async def _process_debezium_series(data: dict):
@@ -130,7 +286,6 @@ async def _process_debezium_series(data: dict):
     Expects data in standard Debezium format.
     """
     try:
-        import asyncio
         from app.kafka.kafka_producer_service import send_recommendation_result
         from app.services.recommendation_service import process_series_upsert, process_series_deletion, recalculate_series
         from app.db.mongodb import get_series_metadata
@@ -206,25 +361,44 @@ async def _process_debezium_series(data: dict):
 
 async def _process_moderation_job(data: dict):
     """Process moderation job: download from S3, run Rekognition, send result."""
-    job = PipelineJobMessage.model_validate(data)
+    try:
+        job = PipelineJobMessage.model_validate(data)
+    except Exception as e:
+        # Xem giải thích ở _process_pipeline_job() — không được để lỗi validate văng ra
+        # ngoài, nếu không job mất tích vĩnh viễn, BE không bao giờ nhận được kết quả.
+        logger.error(f"Invalid moderation job message: {e}")
+        media_id = data.get("mediaId")
+        if media_id:
+            await send_moderation_result(
+                media_id,
+                _moderation_error_result(media_id, data.get("correlationId") or "", f"Invalid job message: {e}"),
+            )
+        return
     logger.info(f"Processing moderation job: mediaId={job.media_id}, type={job.media_type}")
 
     try:
-        file_bytes = download_from_s3(job.s3_key, job.s3_bucket)
-        result = moderate_media(file_bytes, job.media_type, job.media_id, job.correlation_id)
+        # Blocking S3/Rekognition work — run in a thread, same reasoning as the
+        # copyright pipeline (avoid starving the Kafka consumer's heartbeat).
+        file_bytes = await asyncio.to_thread(download_from_s3, job.s3_key, job.s3_bucket)
+        result = await asyncio.to_thread(
+            moderate_media, file_bytes, job.media_type, job.media_id, job.correlation_id
+        )
         await send_moderation_result(job.media_id, result)
     except Exception as e:
         logger.error(f"Moderation failed for mediaId={job.media_id}: {e}")
-        error_result = {
-            "mediaId": job.media_id,
-            "correlationId": job.correlation_id,
-            "isSafe": False,
-            "primaryLabel": None,
-            "confidenceScore": 0.0,
-            "violations": [],
-            "rawResponse": "",
-            "processedAt": datetime.utcnow().isoformat(),
-            "success": False,
-            "errorMessage": str(e),
-        }
-        await send_moderation_result(job.media_id, error_result)
+        await send_moderation_result(
+            job.media_id,
+            _moderation_error_result(job.media_id, job.correlation_id, str(e)),
+        )
+
+
+async def _process_media_delete(data: dict):
+    """Dọn fingerprint Milvus khi BE báo media đã bị xóa (best-effort, không có result topic)."""
+    media_id = data.get("mediaId")
+    if not media_id:
+        return
+    try:
+        await asyncio.to_thread(delete_fingerprint, media_id)
+        logger.info(f"Deleted fingerprint for mediaId={media_id}")
+    except Exception as e:
+        logger.error(f"Failed to delete fingerprint for mediaId={media_id}: {e}")

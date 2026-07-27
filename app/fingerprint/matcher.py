@@ -21,6 +21,7 @@ def match_segments(
     query_fingerprints: list[dict],
     search_results: list[dict],
     exclude_media_id: int | None = None,
+    exclude_creator_id: str | None = None,
 ) -> list[dict]:
     """
     Nối kết quả search rời rạc thành segments vi phạm.
@@ -29,9 +30,11 @@ def match_segments(
         query_fingerprints: List of { "timestamp": float, "vector": list }
                             — fingerprints của video mới.
         search_results: List of { "query_index": int, "media_id": int,
-                                   "timestamp": float, "score": float }
+                                   "creator_id": str, "timestamp": float, "score": float }
                         — kết quả từ Milvus search.
         exclude_media_id: Bỏ qua media_id này (dùng khi upsert — không so với chính mình).
+        exclude_creator_id: Bỏ qua mọi match cùng creator này — không tự báo "vi phạm"
+            nội dung của chính mình (vd. nhân vật lặp lại xuyên suốt 1 bộ truyện).
 
     Returns:
         List of {
@@ -55,6 +58,8 @@ def match_segments(
         if result["score"] < threshold:
             continue
         if exclude_media_id and result["media_id"] == exclude_media_id:
+            continue
+        if exclude_creator_id and result.get("creator_id") == exclude_creator_id:
             continue
 
         query_idx = result["query_index"]

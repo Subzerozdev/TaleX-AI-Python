@@ -14,6 +14,9 @@ class PipelineJobMessage(BaseModel):
     media_type: str = Field(alias="mediaType")
     correlation_id: str = Field(alias="correlationId")
     requested_at: str = Field(alias="requestedAt")
+    # Chỉ dùng cho Content ID (copyright job) — loại trừ so khớp trong cùng creator.
+    # Rỗng ở moderation job (BE không set).
+    creator_id: str = Field(default="", alias="creatorId")
 
 
 class CopyrightViolationItem(BaseModel):
@@ -43,6 +46,7 @@ class CopyrightResultMessage(BaseModel):
     processed_at: str = Field(alias="processedAt")
     success: bool = True
     error_message: Optional[str] = Field(None, alias="errorMessage")
+    preview_s3_key: Optional[str] = Field(None, alias="previewS3Key")
 
 
 class ModerationViolationItem(BaseModel):

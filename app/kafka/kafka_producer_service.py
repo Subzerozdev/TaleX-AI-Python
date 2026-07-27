@@ -1,5 +1,6 @@
 """Kafka producer — send results back to Spring Boot."""
 
+import asyncio
 import json
 import ssl
 
@@ -9,6 +10,13 @@ from loguru import logger
 from app.core.config import settings
 from app.kafka.kafka_config import TOPIC_COPYRIGHT_RESULT, TOPIC_MODERATION_RESULT, TOPIC_RECOMMENDATION_RESULT
 _producer: AIOKafkaProducer | None = None
+
+# _dispatch_job() (kafka_consumer_service.py) đã bọc timeout quanh xử lý "đường vui", nhưng
+# nhánh dự phòng gửi lỗi (timeout/exception handler) gọi lại đúng 2 hàm dưới đây — nếu
+# nguyên nhân treo thật sự là CHÍNH producer này (không phải S3/Rekognition), các lần gọi
+# gửi lỗi đó sẽ không có gì bảo vệ, có thể treo vĩnh viễn. Bọc timeout ngay tại nguồn để
+# an toàn với MỌI nơi gọi, không cần sửa từng call site.
+_SEND_TIMEOUT_SECONDS = 15
 
 
 def _build_ssl_context() -> ssl.SSLContext | None:
@@ -59,8 +67,14 @@ async def send_copyright_result(media_id: str, result: dict):
     if _producer is None:
         logger.warning("Kafka producer not available, skipping send")
         return
-    await _producer.send_and_wait(TOPIC_COPYRIGHT_RESULT, key=media_id, value=result)
-    logger.info(f"Copyright result sent: mediaId={media_id}")
+    try:
+        await asyncio.wait_for(
+            _producer.send_and_wait(TOPIC_COPYRIGHT_RESULT, key=media_id, value=result),
+            timeout=_SEND_TIMEOUT_SECONDS,
+        )
+        logger.info(f"Copyright result sent: mediaId={media_id}")
+    except asyncio.TimeoutError:
+        logger.error(f"Timed out sending copyright result for mediaId={media_id} after {_SEND_TIMEOUT_SECONDS}s")
 
 
 async def send_moderation_result(media_id: str, result: dict):
@@ -68,8 +82,14 @@ async def send_moderation_result(media_id: str, result: dict):
     if _producer is None:
         logger.warning("Kafka producer not available, skipping send")
         return
-    await _producer.send_and_wait(TOPIC_MODERATION_RESULT, key=media_id, value=result)
-    logger.info(f"Moderation result sent: mediaId={media_id}")
+    try:
+        await asyncio.wait_for(
+            _producer.send_and_wait(TOPIC_MODERATION_RESULT, key=media_id, value=result),
+            timeout=_SEND_TIMEOUT_SECONDS,
+        )
+        logger.info(f"Moderation result sent: mediaId={media_id}")
+    except asyncio.TimeoutError:
+        logger.error(f"Timed out sending moderation result for mediaId={media_id} after {_SEND_TIMEOUT_SECONDS}s")
 
 
 async def send_recommendation_result(series_id: str, similar_ids: list[str], action: str = "UPSERT"):

@@ -1,19 +1,27 @@
 """Video/Image moderation via AWS Rekognition frame sampling.
 
-For VIDEO: extract frames (1/2s, max 30), call DetectModerationLabels per frame.
-For IMAGE: single DetectModerationLabels call.
+For VIDEO: extract frames (1/2s, max 30) in a single ffmpeg pass, then call
+DetectModerationLabels on all frames in parallel (thread pool — Rekognition
+client is blocking/sync). For IMAGE: single DetectModerationLabels call.
 Cost: ~$0.001/frame = ~$0.03 per video (30 frames max).
 """
 
+import io
 import json
 import os
+import shutil
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 from loguru import logger
+from PIL import Image
 from app.aws.rekognition_client import detect_moderation_labels
 from app.core.config import settings
+
+# Số lời gọi Rekognition chạy song song — đủ nhanh nhưng không vượt rate limit tài khoản.
+_REKOGNITION_MAX_CONCURRENCY = 8
 
 
 def moderate_media(file_bytes: bytes, media_type: str, media_id: str, correlation_id: str) -> dict:
@@ -60,9 +68,30 @@ def moderate_media(file_bytes: bytes, media_type: str, media_id: str, correlatio
         }
 
 
+def _normalize_for_rekognition(file_bytes: bytes) -> bytes:
+    """Re-encode upload as baseline RGB JPEG before calling Rekognition.
+
+    Rekognition only accepts JPEG/PNG and rejects WEBP/BMP/CMYK-JPEG with
+    InvalidImageFormatException — but the upload whitelist (IMAGE_EXTENSIONS
+    in fingerprint_service.py) allows WEBP/BMP/JFIF for fingerprinting, which
+    Pillow reads fine regardless of format. Re-encoding here closes that gap
+    without restricting what creators can upload.
+    """
+    try:
+        image = Image.open(io.BytesIO(file_bytes))
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=90)
+        return buffer.getvalue()
+    except Exception as e:
+        logger.warning(f"Could not normalize image for Rekognition, using original bytes: {e}")
+        return file_bytes
+
+
 def _moderate_image(file_bytes: bytes) -> tuple[list[dict], list]:
     """Single Rekognition call for image."""
-    labels = detect_moderation_labels(file_bytes)
+    labels = detect_moderation_labels(_normalize_for_rekognition(file_bytes))
     violations = []
     threshold = settings.REKOGNITION_CONFIDENCE_THRESHOLD
     for label in labels:
@@ -78,59 +107,80 @@ def _moderate_image(file_bytes: bytes) -> tuple[list[dict], list]:
 
 
 def _moderate_video(file_bytes: bytes) -> tuple[list[dict], list]:
-    """Extract frames, call Rekognition on each, aggregate results."""
+    """Extract frames, call Rekognition on each IN PARALLEL, aggregate results."""
     frames = _extract_moderation_frames(file_bytes)
     logger.info(f"Extracted {len(frames)} frames for moderation")
 
-    all_violations = []
-    all_raw = []
     threshold = settings.REKOGNITION_CONFIDENCE_THRESHOLD
+    all_raw: list[dict | None] = [None] * len(frames)
+    all_violations = []
 
-    for timestamp_sec, frame_bytes in frames:
-        labels = detect_moderation_labels(frame_bytes)
-        all_raw.append({"timestamp": timestamp_sec, "labels": labels})
-        for label in labels:
-            if label["confidence"] >= threshold:
-                all_violations.append({
-                    "timestampMs": timestamp_sec * 1000,
-                    "endTimestampMs": (timestamp_sec + settings.MODERATION_FRAME_INTERVAL) * 1000,
-                    "label": label["name"],
-                    "confidence": label["confidence"],
-                    "suggestion": f"Content '{label['name']}' detected at {timestamp_sec:.1f}s",
-                })
+    def _check_frame(index: int, timestamp_sec: float, frame_bytes: bytes):
+        return index, timestamp_sec, detect_moderation_labels(frame_bytes)
+
+    with ThreadPoolExecutor(max_workers=_REKOGNITION_MAX_CONCURRENCY) as executor:
+        futures = [
+            executor.submit(_check_frame, i, timestamp_sec, frame_bytes)
+            for i, (timestamp_sec, frame_bytes) in enumerate(frames)
+        ]
+        for future in as_completed(futures):
+            index, timestamp_sec, labels = future.result()
+            all_raw[index] = {"timestamp": timestamp_sec, "labels": labels}
+            for label in labels:
+                if label["confidence"] >= threshold:
+                    all_violations.append({
+                        "timestampMs": timestamp_sec * 1000,
+                        "endTimestampMs": (timestamp_sec + settings.MODERATION_FRAME_INTERVAL) * 1000,
+                        "label": label["name"],
+                        "confidence": label["confidence"],
+                        "suggestion": f"Content '{label['name']}' detected at {timestamp_sec:.1f}s",
+                    })
 
     return all_violations, all_raw
 
 
 def _extract_moderation_frames(video_bytes: bytes) -> list[tuple[float, bytes]]:
-    """Extract frames at interval, max REKOGNITION_MAX_FRAMES frames."""
-    interval = settings.MODERATION_FRAME_INTERVAL
+    """Extract up to REKOGNITION_MAX_FRAMES frames in a SINGLE ffmpeg pass
+    (previously spawned 1 ffmpeg process per frame — 30x process/seek overhead)."""
+    base_interval = settings.MODERATION_FRAME_INTERVAL
     max_frames = settings.REKOGNITION_MAX_FRAMES
 
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
         tmp.write(video_bytes)
         tmp_path = tmp.name
 
+    frame_dir = tempfile.mkdtemp()
     try:
         duration = _get_video_duration(tmp_path)
         if duration <= 0:
             return []
 
-        total_possible = int(duration / interval)
-        step = max(1, total_possible // max_frames) if total_possible > max_frames else 1
+        # Video dài hơn base_interval * max_frames -> dãn khoảng cách ra để rải đều
+        # frame khắp video (giữ đúng hành vi cũ), thay vì chỉ lấy được đoạn đầu.
+        effective_interval = max(base_interval, duration / max_frames)
+
+        extract_result = subprocess.run(
+            ["ffmpeg", "-i", tmp_path, "-vf", f"fps=1/{effective_interval}",
+             "-frames:v", str(max_frames), "-f", "image2", "-c:v", "mjpeg",
+             os.path.join(frame_dir, "frame_%03d.jpg")],
+            capture_output=True, timeout=60,
+        )
+        if extract_result.returncode != 0:
+            logger.warning(
+                f"ffmpeg frame extraction failed: "
+                f"{extract_result.stderr.decode(errors='ignore')[:500]}"
+            )
+            return []
 
         frames = []
-        for i in range(0, total_possible, step):
-            if len(frames) >= max_frames:
-                break
-            timestamp = i * interval
-            frame_bytes = _extract_single_frame(tmp_path, timestamp)
-            if frame_bytes:
-                frames.append((timestamp, frame_bytes))
+        for i, filename in enumerate(sorted(os.listdir(frame_dir))[:max_frames]):
+            with open(os.path.join(frame_dir, filename), "rb") as f:
+                frames.append((round(i * effective_interval, 2), f.read()))
 
         return frames
     finally:
         os.unlink(tmp_path)
+        shutil.rmtree(frame_dir, ignore_errors=True)
 
 
 def _get_video_duration(video_path: str) -> float:
@@ -144,18 +194,3 @@ def _get_video_duration(video_path: str) -> float:
         return float(result.stdout.strip())
     except Exception:
         return 0.0
-
-
-def _extract_single_frame(video_path: str, timestamp: float) -> bytes | None:
-    """Extract a single JPEG frame at given timestamp."""
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-ss", str(timestamp), "-i", video_path,
-             "-frames:v", "1", "-f", "image2", "-c:v", "mjpeg", "pipe:1"],
-            capture_output=True, timeout=15,
-        )
-        if result.returncode == 0 and result.stdout:
-            return result.stdout
-        return None
-    except Exception:
-        return None

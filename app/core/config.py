@@ -45,10 +45,20 @@ class Settings:
 
     # Fingerprint
     FINGERPRINT_FPS: int = int(os.getenv("FINGERPRINT_FPS", "1"))
-    FINGERPRINT_SIMILARITY_THRESHOLD: float = float(os.getenv("FINGERPRINT_SIMILARITY_THRESHOLD", "0.85"))
+    # 0.90 thay vì 0.85 mặc định — tranh vẽ (màu phẳng, nét đơn giản) dễ bị pHash coi
+    # là "giống nhau" hơn ảnh chụp thật dù nội dung khác hẳn, cần ngưỡng chặt hơn để
+    # giảm false positive (rủi ro chấp nhận được vì giờ đã route qua Staff review,
+    # không còn tự động chặn cứng — xem ContentPipelineServiceImpl.handleCopyrightResult).
+    FINGERPRINT_SIMILARITY_THRESHOLD: float = float(os.getenv("FINGERPRINT_SIMILARITY_THRESHOLD", "0.90"))
     FINGERPRINT_MIN_MATCH_SECONDS: int = int(os.getenv("FINGERPRINT_MIN_MATCH_SECONDS", "5"))
     FINGERPRINT_MAX_GAP_SECONDS: int = int(os.getenv("FINGERPRINT_MAX_GAP_SECONDS", "2"))
     FINGERPRINT_MAX_FILE_SIZE_MB: int = int(os.getenv("FINGERPRINT_MAX_FILE_SIZE_MB", "100"))
+    # Giới hạn tổng số frame trích xuất để tạo fingerprint — không có cap này, video dài
+    # (vd 1 tiếng) ở FPS mặc định sinh ra hàng nghìn frame, mỗi frame là 1 vector Milvus,
+    # làm chậm xử lý và phình dữ liệu không cần thiết. Giống REKOGNITION_MAX_FRAMES bên
+    # kiểm duyệt nhưng nhiều hơn — fingerprint cần rải đều khắp video để bắt đúng đoạn
+    # trùng, không chỉ lấy mẫu để phân loại như kiểm duyệt.
+    FINGERPRINT_MAX_FRAMES: int = int(os.getenv("FINGERPRINT_MAX_FRAMES", "300"))
 
     # Kafka (Aiven)
     KAFKA_BOOTSTRAP_SERVERS: str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "")

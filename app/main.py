@@ -8,6 +8,7 @@ Swagger UI: http://localhost:8000/docs
 
 import asyncio
 import json
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -37,6 +38,16 @@ async def lifespan(application: FastAPI):
     setup_logging()
     logger.info("Starting TaleX AI Service...")
 
+    # Executor mặc định của asyncio.to_thread() chỉ có min(32, cpu_count+4) thread — trên
+    # VPS ít CPU (2 core → mặc định chỉ 6 thread), _JOB_SEMAPHORE cho phép 8 job chạy song
+    # song trong kafka_consumer_service.py nhưng mỗi job cần tới 3 lời gọi to_thread tuần
+    # tự (download S3, sinh preview, fingerprint/kiểm duyệt) — không đủ thread thật để đạt
+    # đúng mức song song mong muốn, khiến job phải xếp hàng chờ thread rảnh dù semaphore đã
+    # cho phép chạy, góp phần vào tổng thời gian xử lý cả lô ảnh bị kéo dài. Set executor
+    # riêng, rộng hơn hẳn nhu cầu thực tế (16, > semaphore=8 để còn dư cho các to_thread
+    # khác như CDC recommendation sync).
+    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=16))
+
     # 1. Load embedding model
     embeddings.load_model()
 
@@ -61,7 +72,7 @@ async def lifespan(application: FastAPI):
 
     # 7. Kafka producer + consumer (content pipeline)
     await start_producer()
-    consumer_task = asyncio.create_task(consume_loop())
+    consumer_task = asyncio.create_task(_run_consumer_forever())
 
     logger.info("TaleX AI Service ready!")
 
@@ -72,6 +83,25 @@ async def lifespan(application: FastAPI):
     consumer_task.cancel()
     await stop_producer()
     await close_mongodb()
+
+
+async def _run_consumer_forever():
+    """
+    Supervisor cho consume_loop() — trước đây chạy qua asyncio.create_task() một lần
+    duy nhất, không ai await/kiểm tra kết quả: nếu consume_loop() treo (kết nối TCP
+    chết âm thầm) hoặc crash vì exception, task chết luôn không ai biết, consumer
+    ngừng xử lý job vĩnh viễn mà service vẫn báo "khỏe" bình thường. Vòng lặp này tự
+    khởi động lại consume_loop() (tạo AIOKafkaConsumer mới, ép kết nối TCP mới) mỗi khi
+    nó dừng vì bất kỳ lý do gì.
+    """
+    while True:
+        try:
+            await consume_loop()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Kafka consumer loop crashed, restarting in 5s: {e}", exc_info=True)
+        await asyncio.sleep(5)
 
 
 def _seed_data():
