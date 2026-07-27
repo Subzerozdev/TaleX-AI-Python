@@ -79,7 +79,7 @@ class Settings:
     MODERATION_FRAME_INTERVAL: float = float(os.getenv("MODERATION_FRAME_INTERVAL", "2.0"))
 
     # MongoDB
-    MONGO_URI: str = os.getenv("MONGO_URI", "mongodb+srv://thanhnam91tt2_db_user:9Na3LYk5rNTtzGos@talex-featurestore.quvzyho.mongodb.net/TaleX-FeatureStore")
+    MONGO_URI: str = os.getenv("MONGO_URI", "")
     MONGO_DB_NAME: str = os.getenv("MONGO_DB_NAME", "TaleX-FeatureStore")
 
 
