@@ -24,7 +24,7 @@ from app.kafka.kafka_consumer_service import consume_loop
 from app.kafka.kafka_producer_service import start_producer, stop_producer
 from app.llm import gemini_client
 from app.rag import embeddings, vector_store
-from app.routers import chat, content, fingerprint, health, moderation, search, sync
+from app.routers import chat, content, fingerprint, health, moderation, recommendation, search, sync
 
 
 @asynccontextmanager
@@ -131,3 +131,4 @@ app.include_router(chat.router)
 app.include_router(content.router)
 app.include_router(moderation.router)
 app.include_router(fingerprint.router)
+app.include_router(recommendation.router)

@@ -42,3 +42,7 @@ boto3>=1.35.0
 # MongoDB Async Driver
 pymongo<4.9.0
 motor==3.5.0
+
+# Recommend Ranking
+lightgbm==4.6.0
+dnspython>=2.0.0
