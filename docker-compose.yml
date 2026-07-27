@@ -24,17 +24,12 @@ services:
       - chroma_data:/app/chroma_data
       # Giữ logs
       - app_logs:/app/logs
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        mkdir -p /app/certs
-        if [ -n "$$KAFKA_CA_CERT" ]; then
-          printf '%b' "$$KAFKA_CA_CERT" > /app/certs/ca.pem
-          printf '%b' "$$KAFKA_ACCESS_CERT" > /app/certs/service.cert
-          printf '%b' "$$KAFKA_ACCESS_KEY" > /app/certs/service.key
-          echo "Kafka SSL certs written to /app/certs/"
-        fi
-        exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+    # Cert Kafka (ca.pem/service.cert/service.key) được deploy.yml ghi thẳng ra thư mục
+    # certs/ trên host TRƯỚC khi container chạy (giống cách BE làm) — không nhét PEM
+    # dài vào .env để Docker Compose tự parse, vì .env parser của Compose không xử lý
+    # nổi value dài chứa \n (đã gặp lỗi thật: "unexpected character in variable name").
+    # certs/ được mount qua volume .:/app nên container thấy file ngay, không cần
+    # entrypoint tự ghi lại.
     depends_on:
       milvus:
         condition: service_healthy

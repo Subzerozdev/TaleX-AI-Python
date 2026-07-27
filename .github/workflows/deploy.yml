@@ -20,6 +20,16 @@ jobs:
             cd ~/TaleX-AI-Python || git clone ${{ secrets.REPO_URL }} ~/TaleX-AI-Python && cd ~/TaleX-AI-Python
             git pull origin main
 
+            # Ghi cert Kafka thẳng ra file PEM thật trên host (giống cách repo TaleX-Server
+            # làm) — KHÔNG nhét PEM dài vào .env để Docker Compose tự parse, vì .env parser
+            # của Compose không xử lý nổi value dài chứa \n (đã gặp lỗi thật khi thử cách đó:
+            # "unexpected character in variable name", khiến job báo thành công giả dù chưa
+            # hề redeploy). certs/ được mount qua volume .:/app nên container thấy file ngay.
+            mkdir -p certs
+            echo '${{ secrets.KAFKA_CA_CERT }}' | sed 's/\\n/\n/g' > certs/ca.pem
+            echo '${{ secrets.KAFKA_ACCESS_CERT }}' | sed 's/\\n/\n/g' > certs/service.cert
+            echo '${{ secrets.KAFKA_ACCESS_KEY }}' | sed 's/\\n/\n/g' > certs/service.key
+
             # Create .env from GitHub Secrets
             cat > .env << ENVEOF
             GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
@@ -39,9 +49,6 @@ jobs:
             KAFKA_SSL_CAFILE=/app/certs/ca.pem
             KAFKA_SSL_CERTFILE=/app/certs/service.cert
             KAFKA_SSL_KEYFILE=/app/certs/service.key
-            KAFKA_CA_CERT="${{ secrets.KAFKA_CA_CERT }}"
-            KAFKA_ACCESS_CERT="${{ secrets.KAFKA_ACCESS_CERT }}"
-            KAFKA_ACCESS_KEY="${{ secrets.KAFKA_ACCESS_KEY }}"
             AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
             AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
             AWS_REGION=${{ secrets.AWS_REGION }}
