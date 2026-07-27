@@ -20,11 +20,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
 # Copy thư viện đã cài từ stage 1
 COPY --from=builder /install /usr/local
 
+# Download embedding model lúc build — đặt TRƯỚC COPY . . để cache layer này chỉ bị
+# invalidate khi requirements.txt đổi, không phải mỗi lần sửa code app (COPY . . luôn
+# invalidate mọi layer phía sau nó, kể cả layer không phụ thuộc gì vào source code).
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+
 # Copy source code
 COPY . .
-
-# Download embedding model lúc build
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
 # Tạo thư mục cho logs và ChromaDB data
 RUN mkdir -p logs chroma_data
