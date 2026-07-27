@@ -39,9 +39,9 @@ jobs:
             KAFKA_SSL_CAFILE=/app/certs/ca.pem
             KAFKA_SSL_CERTFILE=/app/certs/service.cert
             KAFKA_SSL_KEYFILE=/app/certs/service.key
-            KAFKA_CA_CERT=${{ secrets.KAFKA_CA_CERT }}
-            KAFKA_ACCESS_CERT=${{ secrets.KAFKA_ACCESS_CERT }}
-            KAFKA_ACCESS_KEY=${{ secrets.KAFKA_ACCESS_KEY }}
+            KAFKA_CA_CERT="${{ secrets.KAFKA_CA_CERT }}"
+            KAFKA_ACCESS_CERT="${{ secrets.KAFKA_ACCESS_CERT }}"
+            KAFKA_ACCESS_KEY="${{ secrets.KAFKA_ACCESS_KEY }}"
             AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
             AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
             AWS_REGION=${{ secrets.AWS_REGION }}
@@ -59,8 +59,12 @@ jobs:
             docker image prune -af --filter "until=48h" 2>/dev/null || true
 
             # Build and start
+            # Nếu docker compose không parse nổi .env (vd cert lỗi format) thì phải fail rõ
+            # ràng ở đây — nếu không, script chạy tiếp xuống health check, health check pass
+            # nhờ container CŨ vẫn đang chạy khỏe, và cả job báo "success" dù thực chất chưa
+            # hề redeploy gì (đã xảy ra thật: job xong trong 13s, container không hề restart).
             COMPOSE_DOCKER_CLI_BUILD=1 DOCKER_BUILDKIT=1 \
-              docker compose up --build -d
+              docker compose up --build -d || { echo "docker compose up FAILED"; exit 1; }
 
             # Post-build cleanup
             docker image prune -f 2>/dev/null || true
