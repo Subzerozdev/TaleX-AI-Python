@@ -20,15 +20,24 @@ jobs:
             cd ~/TaleX-AI-Python || git clone ${{ secrets.REPO_URL }} ~/TaleX-AI-Python && cd ~/TaleX-AI-Python
             git pull origin main
 
-            # Ghi cert Kafka thẳng ra file PEM thật trên host (giống cách repo TaleX-Server
-            # làm) — KHÔNG nhét PEM dài vào .env để Docker Compose tự parse, vì .env parser
-            # của Compose không xử lý nổi value dài chứa \n (đã gặp lỗi thật khi thử cách đó:
-            # "unexpected character in variable name", khiến job báo thành công giả dù chưa
-            # hề redeploy). certs/ được mount qua volume .:/app nên container thấy file ngay.
+            # Ghi cert Kafka thẳng ra file PEM thật trên host — certs/ được mount qua volume
+            # .:/app nên container thấy file ngay, không cần entrypoint tự ghi lại.
+            # QUAN TRỌNG: secret phải ở dạng PEM nhiều dòng tự nhiên (mỗi dòng ~64 ký tự),
+            # KHÔNG được nén thành 1 dòng dài kèm \n — dòng dài (2000+ ký tự) bị chính kết
+            # nối SSH của appleboy/ssh-action tự bẻ xuống dòng giữa chừng (PTY line-wrap),
+            # làm hỏng PEM (đã xảy ra thật: "-----BEGIN" và "CERTIFICATE-----" bị tách làm
+            # đôi). PEM nhiều dòng ngắn tránh được vấn đề này vì không dòng nào đủ dài để bị wrap.
             mkdir -p certs
-            echo '${{ secrets.KAFKA_CA_CERT }}' | sed 's/\\n/\n/g' > certs/ca.pem
-            echo '${{ secrets.KAFKA_ACCESS_CERT }}' | sed 's/\\n/\n/g' > certs/service.cert
-            echo '${{ secrets.KAFKA_ACCESS_KEY }}' | sed 's/\\n/\n/g' > certs/service.key
+            cat > certs/ca.pem << 'CAEOF'
+            ${{ secrets.KAFKA_CA_CERT }}
+            CAEOF
+            cat > certs/service.cert << 'CERTEOF'
+            ${{ secrets.KAFKA_ACCESS_CERT }}
+            CERTEOF
+            cat > certs/service.key << 'KEYEOF'
+            ${{ secrets.KAFKA_ACCESS_KEY }}
+            KEYEOF
+            sed -i 's/^[[:space:]]*//' certs/ca.pem certs/service.cert certs/service.key
 
             # Create .env from GitHub Secrets
             cat > .env << ENVEOF
