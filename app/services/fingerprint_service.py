@@ -17,7 +17,7 @@ from loguru import logger
 
 from app.fingerprint.extractor import extract_frames_from_video, extract_image
 from app.fingerprint.hasher import hash_frames, hash_image, VECTOR_DIM
-from app.fingerprint.matcher import match_segments
+from app.fingerprint.matcher import match_image_violation, match_segments
 from app.fingerprint.milvus_store import (
     delete_by_media_id,
     get_count,
@@ -79,7 +79,9 @@ def process_fingerprint(
     delete_by_media_id(media_id)
 
     # Tìm trùng trong Milvus — loại trừ chính creator này (xem docstring hàm).
-    violations = _find_violations(fingerprints, exclude_media_id=media_id, exclude_creator_id=creator_id)
+    violations = _find_violations(
+        fingerprints, exclude_media_id=media_id, exclude_creator_id=creator_id, is_video=is_video
+    )
 
     # Lưu fingerprints mới vào Milvus
     insert_fingerprints(media_id, creator_id, fingerprints)
@@ -178,9 +180,16 @@ def _process_image(file_bytes: bytes) -> list[dict]:
 
 
 def _find_violations(
-    fingerprints: list[dict], exclude_media_id: str, exclude_creator_id: str = ""
+    fingerprints: list[dict], exclude_media_id: str, exclude_creator_id: str = "", is_video: bool = True
 ) -> list[dict]:
-    """Tìm đoạn trùng trong Milvus (loại trừ cùng creator — xem match_segments)."""
+    """
+    Tìm vi phạm trong Milvus (loại trừ cùng creator — xem match_segments/match_image_violation).
+
+    is_video quyết định cách so khớp: video nối nhiều điểm liên tiếp thành đoạn (phải dài
+    tối thiểu FINGERPRINT_MIN_MATCH_SECONDS), ảnh chỉ có 1 điểm fingerprint duy nhất nên so
+    khớp trực tiếp theo threshold — dùng chung match_segments() cho ảnh sẽ luôn ra duration=0,
+    bị loại oan dù giống 100% (đã gặp thật, xem match_image_violation docstring).
+    """
     if not fingerprints:
         return []
 
@@ -194,9 +203,15 @@ def _find_violations(
     if not search_results:
         return []
 
-    # Matcher nối thành segments
-    return match_segments(
-        query_fingerprints=fingerprints,
+    if is_video:
+        return match_segments(
+            query_fingerprints=fingerprints,
+            search_results=search_results,
+            exclude_media_id=exclude_media_id,
+            exclude_creator_id=exclude_creator_id,
+        )
+
+    return match_image_violation(
         search_results=search_results,
         exclude_media_id=exclude_media_id,
         exclude_creator_id=exclude_creator_id,

@@ -102,6 +102,56 @@ def match_segments(
     return segments
 
 
+def match_image_violation(
+    search_results: list[dict],
+    exclude_media_id: str | None = None,
+    exclude_creator_id: str | None = None,
+) -> list[dict]:
+    """
+    Tìm vi phạm cho ẢNH — khác video, ảnh chỉ có 1 điểm fingerprint duy nhất
+    (timestamp=0.0), không có khái niệm "đoạn thời gian" để nối. Áp MIN_MATCH_SECONDS
+    của match_segments() lên ảnh khiến duration luôn = 0, loại bỏ MỌI kết quả bất kể
+    giống nhau đến đâu — đây là lý do ảnh trùng 100% vẫn lọt qua kiểm duyệt. So khớp
+    trực tiếp theo threshold ở đây, không qua bước nối đoạn.
+
+    Args:
+        search_results: kết quả search_similar() — đã loại trừ cùng creator ở Milvus.
+        exclude_media_id: bỏ qua match trùng chính media_id đang xử lý (upsert).
+        exclude_creator_id: bỏ qua match cùng creator (phòng hờ, Milvus đã lọc rồi).
+
+    Returns:
+        List of segment dict giống match_segments(), violation_type="IMAGE".
+    """
+    threshold = settings.FINGERPRINT_SIMILARITY_THRESHOLD
+
+    violations = []
+    seen_media_ids = set()
+
+    for result in search_results:
+        if result["score"] < threshold:
+            continue
+        if exclude_media_id and result["media_id"] == exclude_media_id:
+            continue
+        if exclude_creator_id and result.get("creator_id") == exclude_creator_id:
+            continue
+        if result["media_id"] in seen_media_ids:
+            continue  # search_results đã sort theo score — giữ match tốt nhất mỗi nguồn
+        seen_media_ids.add(result["media_id"])
+
+        violations.append({
+            "source_media_id": result["media_id"],
+            "start_time_target": 0.0,
+            "end_time_target": 0.0,
+            "start_time_source": result.get("timestamp", 0.0),
+            "end_time_source": result.get("timestamp", 0.0),
+            "similarity_score": round(result["score"], 4),
+            "violation_type": "IMAGE",
+        })
+
+    logger.info(f"Matcher: {len(violations)} image violations found")
+    return violations
+
+
 def _merge_consecutive(matches: list[dict], max_gap: float) -> list[dict]:
     """
     Nối các giây liên tiếp (cho phép gap) thành segments.
