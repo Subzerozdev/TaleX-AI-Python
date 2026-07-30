@@ -54,7 +54,8 @@ jobs:
             FINGERPRINT_SIMILARITY_THRESHOLD=0.85
             FINGERPRINT_MIN_MATCH_SECONDS=5
             KAFKA_BOOTSTRAP_SERVERS=${{ secrets.KAFKA_BOOTSTRAP_SERVERS }}
-            KAFKA_CONSUMER_GROUP=python-content-pipeline-group
+            KAFKA_CONSUMER_GROUP=${{ secrets.KAFKA_CONSUMER_GROUP }}
+            KAFKA_TOPIC_SUFFIX=${{ secrets.KAFKA_TOPIC_SUFFIX }}
             KAFKA_SSL_CAFILE=/app/certs/ca.pem
             KAFKA_SSL_CERTFILE=/app/certs/service.cert
             KAFKA_SSL_KEYFILE=/app/certs/service.key

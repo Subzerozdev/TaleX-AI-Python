@@ -66,6 +66,9 @@ class Settings:
     KAFKA_SSL_CERTFILE: str = os.getenv("KAFKA_SSL_CERTFILE", "")
     KAFKA_SSL_KEYFILE: str = os.getenv("KAFKA_SSL_KEYFILE", "")
     KAFKA_CONSUMER_GROUP: str = os.getenv("KAFKA_CONSUMER_GROUP", "python-content-pipeline-group")
+    # Cho phép local dev dùng topic riêng (vd "-local"), tách biệt hoàn toàn khỏi VPS dùng
+    # chung 1 cụm Kafka Aiven — mặc định rỗng nên VPS không cần đổi gì.
+    KAFKA_TOPIC_SUFFIX: str = os.getenv("KAFKA_TOPIC_SUFFIX", "")
 
     # AWS S3 + Rekognition
     AWS_ACCESS_KEY_ID: str = os.getenv("AWS_ACCESS_KEY_ID", "")
