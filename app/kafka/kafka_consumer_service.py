@@ -108,9 +108,19 @@ async def consume_loop():
         logger.info("Kafka consumer stopped")
 
 
-# Giới hạn số job chạy song song cùng lúc (tránh làm quá tải Rekognition/Milvus/S3).
-# Đặt ở module-level để chặn đúng across nhiều batch liền kề, không chỉ trong 1 batch.
-_JOB_SEMAPHORE = asyncio.Semaphore(8)
+# Giới hạn số job chạy song song cùng lúc (tránh làm quá tải Rekognition/Milvus/S3, và
+# tránh vượt mem_limit của container — xem docker-compose.yml). Đặt ở module-level để chặn
+# đúng across nhiều batch liền kề, không chỉ trong 1 batch.
+#
+# VIDEO và ẢNH tốn RAM khác hẳn nhau nên tách 2 semaphore riêng thay vì dùng chung 1 số:
+# ảnh nhẹ (không FFmpeg, 1 file nhỏ) nên giữ được mức song song cao (8). Video mỗi job
+# trích tới FINGERPRINT_MAX_FRAMES=300 frame PNG giữ hết trong RAM cùng lúc (extractor.py)
+# cộng thêm tiến trình FFmpeg riêng — ước tính ~400-500MB/job. Nếu dùng chung số 8 cho cả
+# 2 loại, 8 video chạy cùng lúc (trường hợp xấu nhất) có thể tốn ~4GB, vượt xa mem_limit
+# container (2GB) → bị Docker kill liên tục. Giới hạn video thấp hơn hẳn (3) để trường hợp
+# xấu nhất vẫn nằm trong ngân sách RAM.
+_VIDEO_JOB_SEMAPHORE = asyncio.Semaphore(3)
+_IMAGE_JOB_SEMAPHORE = asyncio.Semaphore(8)
 
 # consume_loop() dùng asyncio.gather() đợi TOÀN BỘ job trong 1 batch xong mới commit() rồi
 # mới getmany() batch tiếp — nếu 1 job treo vô thời hạn (mạng chập chờn khi gọi S3/Rekognition,
@@ -179,9 +189,11 @@ async def _send_hung_job_error_result(msg, timeout_used: int):
 
 
 async def _dispatch_job(msg):
-    """Route 1 Kafka message tới handler tương ứng, giới hạn concurrency bằng semaphore."""
-    async with _JOB_SEMAPHORE:
-        is_video = isinstance(msg.value, dict) and msg.value.get("mediaType") == "VIDEO"
+    """Route 1 Kafka message tới handler tương ứng, giới hạn concurrency bằng semaphore
+    riêng cho video/ảnh (xem giải thích ở khai báo _VIDEO_JOB_SEMAPHORE/_IMAGE_JOB_SEMAPHORE)."""
+    is_video = isinstance(msg.value, dict) and msg.value.get("mediaType") == "VIDEO"
+    job_semaphore = _VIDEO_JOB_SEMAPHORE if is_video else _IMAGE_JOB_SEMAPHORE
+    async with job_semaphore:
         timeout = _VIDEO_JOB_PROCESSING_TIMEOUT_SECONDS if is_video else _JOB_PROCESSING_TIMEOUT_SECONDS
         try:
             if msg.topic == TOPIC_PIPELINE_JOB:

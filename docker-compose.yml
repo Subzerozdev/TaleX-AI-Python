@@ -9,6 +9,17 @@ services:
     build: .
     ports:
       - "8000:8000"
+    # VPS chỉ có 5.8GB RAM chia cho nhiều service (BE+Postgres+QuestDB, AI+Milvus) — không
+    # giới hạn thì container này có thể phình không kiểm soát khi nhiều video/ảnh được xử lý
+    # đồng thời (tới 8 job song song, mỗi video còn tốn thêm RAM giải mã FFmpeg), làm cạn RAM
+    # cả máy chủ và kéo sập luôn các container khác. Đặt trần để nếu có vượt, chỉ container
+    # này bị Docker tự kill + tự restart (restart: unless-stopped), không ảnh hưởng container khác.
+    mem_limit: 2g
+    # VPS chỉ có 4 core — FFmpeg giải mã video tốn CPU nặng, nếu không giới hạn, nhiều video
+    # xử lý cùng lúc có thể chiếm hết CPU, làm BE/Postgres/QuestDB phản hồi chậm hẳn dù RAM
+    # vẫn ổn (đây là vấn đề khác với mem_limit ở trên — CPU chỉ làm chậm, không làm sập/kill,
+    # nhưng vẫn cần chặn để không "nuốt" hết CPU của container khác). 2.0 = tối đa 2 core.
+    cpus: 2.0
     env_file:
       - .env
     environment:
