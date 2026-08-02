@@ -198,7 +198,10 @@ def delete_by_media_id(media_id: str) -> int:
     """Xóa tất cả vectors của 1 video."""
     collection = get_collection()
 
-    expr = f'media_id == "{media_id}"'
+    # media_id tới từ Kafka (content-media-delete đọc thẳng dict, không qua Pydantic
+    # validate) — escape dấu " giống search_similar() ở trên, tránh 1 giá trị bất thường
+    # làm hỏng/mở rộng cú pháp boolean expr (có thể xóa nhầm fingerprint của media khác).
+    expr = f'media_id == "{media_id.replace(chr(34), "")}"'
     result = collection.delete(expr, timeout=_MILVUS_CALL_TIMEOUT_SECONDS)
     # Tương tự insert_fingerprints() — search() vẫn thấy đúng trạng thái đã xóa mà
     # không cần flush() ngay, tránh nghẽn khi nhiều luồng cùng gọi song song.

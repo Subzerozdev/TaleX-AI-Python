@@ -53,6 +53,11 @@ class Settings:
     FINGERPRINT_MIN_MATCH_SECONDS: int = int(os.getenv("FINGERPRINT_MIN_MATCH_SECONDS", "5"))
     FINGERPRINT_MAX_GAP_SECONDS: int = int(os.getenv("FINGERPRINT_MAX_GAP_SECONDS", "2"))
     FINGERPRINT_MAX_FILE_SIZE_MB: int = int(os.getenv("FINGERPRINT_MAX_FILE_SIZE_MB", "100"))
+    # Ảnh chỉ có ĐÚNG 1 vector truy vấn (khác video có tới hàng trăm frame), nên top_k thấp
+    # (như video dùng =3) giới hạn cả mạng lưới chỉ còn tối đa 3 ứng viên — nếu 1 kẻ đạo nội
+    # dung đăng lại cùng ảnh ở 3+ tài khoản khác, nguồn gốc thật có thể bị đẩy khỏi top_k.
+    # Ảnh rẻ hơn video nhiều (1 vector vs tới 300) nên mở rộng top_k riêng cho ảnh không tốn kém.
+    FINGERPRINT_IMAGE_TOP_K: int = int(os.getenv("FINGERPRINT_IMAGE_TOP_K", "20"))
     # Giới hạn tổng số frame trích xuất để tạo fingerprint — không có cap này, video dài
     # (vd 1 tiếng) ở FPS mặc định sinh ra hàng nghìn frame, mỗi frame là 1 vector Milvus,
     # làm chậm xử lý và phình dữ liệu không cần thiết. Giống REKOGNITION_MAX_FRAMES bên

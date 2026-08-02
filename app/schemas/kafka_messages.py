@@ -1,7 +1,14 @@
 """Pydantic models for Kafka messages — schema matches Spring Boot DTOs."""
 
-from pydantic import BaseModel, Field
+import re
+
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
+
+# BE sinh mediaId bằng GenerationType.UUID (chỉ gồm hex + gạch ngang) — pattern này khớp
+# đúng UUID, chặn sớm giá trị bất thường (vd chứa dấu ") trước khi tới bất kỳ câu lệnh
+# Milvus expr nào ghép chuỗi từ media_id.
+_MEDIA_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
 
 
 class PipelineJobMessage(BaseModel):
@@ -17,6 +24,13 @@ class PipelineJobMessage(BaseModel):
     # Chỉ dùng cho Content ID (copyright job) — loại trừ so khớp trong cùng creator.
     # Rỗng ở moderation job (BE không set).
     creator_id: str = Field(default="", alias="creatorId")
+
+    @field_validator("media_id")
+    @classmethod
+    def validate_media_id(cls, v: str) -> str:
+        if not _MEDIA_ID_PATTERN.fullmatch(v):
+            raise ValueError(f"media_id has unexpected format: {v!r}")
+        return v
 
 
 class CopyrightViolationItem(BaseModel):

@@ -31,12 +31,24 @@ def get_s3_client():
     return _s3_client
 
 
-def download_from_s3(s3_key: str, bucket: str = None) -> bytes:
+def download_from_s3(s3_key: str, bucket: str = None, max_bytes: int | None = None) -> bytes:
     """Download file from S3, return bytes."""
     bucket = bucket or settings.AWS_S3_BUCKET
     client = get_s3_client()
     if client is None:
         raise RuntimeError("S3 client not configured — check AWS credentials")
+    if max_bytes is not None:
+        # Chặn TRƯỚC khi tải — .read() không giới hạn dung lượng có thể đọc cả file vài
+        # GB thẳng vào RAM; với nhiều job chạy song song (_JOB_SEMAPHORE), vài file lớn
+        # cùng lúc đủ để OOM cả service. HeadObject rẻ (chỉ lấy metadata, không tải body).
+        head = client.head_object(Bucket=bucket, Key=s3_key)
+        content_length = head.get("ContentLength")
+        if content_length is not None and content_length > max_bytes:
+            raise ValueError(
+                f"S3 object {s3_key} is {content_length} bytes, exceeds cap {max_bytes} bytes"
+            )
+        if content_length is None:
+            logger.warning(f"S3 HeadObject for {s3_key} missing ContentLength — proceeding without pre-check")
     logger.info(f"S3 download: bucket={bucket}, key={s3_key}")
     response = client.get_object(Bucket=bucket, Key=s3_key)
     data = response["Body"].read()

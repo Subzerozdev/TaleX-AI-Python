@@ -81,7 +81,11 @@ def match_segments(
         # Sắp xếp theo target_timestamp
         matches.sort(key=lambda m: m["target_timestamp"])
 
-        merged = _merge_consecutive(matches, max_gap)
+        # Dung sai float-dust = nửa chu kỳ 1 frame (1/FPS), thay vì hằng số cố định — ở
+        # FPS mặc định (1) ra đúng 0.5 giống trước, nhưng còn đúng nếu FPS đổi (chu kỳ dài
+        # hơn/ngắn hơn 1s thì dung sai cũng co giãn theo).
+        tolerance = 0.5 / max(settings.FINGERPRINT_FPS, 1)
+        merged = _merge_consecutive(matches, max_gap, tolerance)
 
         for seg in merged:
             duration = seg["end_target"] - seg["start_target"]
@@ -152,7 +156,7 @@ def match_image_violation(
     return violations
 
 
-def _merge_consecutive(matches: list[dict], max_gap: float) -> list[dict]:
+def _merge_consecutive(matches: list[dict], max_gap: float, tolerance: float = 0.5) -> list[dict]:
     """
     Nối các giây liên tiếp (cho phép gap) thành segments.
 
@@ -174,7 +178,7 @@ def _merge_consecutive(matches: list[dict], max_gap: float) -> list[dict]:
     for i in range(1, len(matches)):
         gap = matches[i]["target_timestamp"] - current["end_target"]
 
-        if gap <= max_gap + 0.5:  # +0.5 cho dung sai float
+        if gap <= max_gap + tolerance:  # tolerance = nửa chu kỳ frame, hấp thụ dung sai float
             # Nối tiếp vào segment hiện tại
             current["end_target"] = matches[i]["target_timestamp"]
             current["end_source"] = matches[i]["source_timestamp"]

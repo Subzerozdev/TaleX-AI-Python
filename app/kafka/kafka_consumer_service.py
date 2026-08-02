@@ -18,7 +18,7 @@ from app.kafka.kafka_config import (
 )
 from app.kafka.kafka_producer_service import send_copyright_result, send_moderation_result
 from app.schemas.kafka_messages import PipelineJobMessage
-from app.services.fingerprint_service import process_fingerprint, delete_fingerprint
+from app.services.fingerprint_service import MAX_FILE_SIZE, process_fingerprint, delete_fingerprint
 from app.services.video_moderation_service import moderate_media
 from app.services.recommendation_service import process_series_upsert
 from app.services.preview_service import generate_image_preview, generate_video_preview
@@ -127,6 +127,12 @@ _JOB_PROCESSING_TIMEOUT_SECONDS = 60
 _VIDEO_JOB_PROCESSING_TIMEOUT_SECONDS = 180
 
 
+def _safe_dump(d: dict) -> str:
+    """Serialize a raw Kafka message dict for logging, bounded to avoid log flooding on a
+    huge/corrupt payload."""
+    return json.dumps(d, default=str)[:500]
+
+
 def _copyright_error_result(media_id: str, correlation_id: str, error_message: str) -> dict:
     return {
         "mediaId": media_id,
@@ -208,6 +214,11 @@ async def _process_pipeline_job(data: dict):
                 media_id,
                 _copyright_error_result(media_id, data.get("correlationId") or "", f"Invalid job message: {e}"),
             )
+        else:
+            # Không có mediaId để gửi kết quả lỗi về — job này biến mất hoàn toàn phía BE,
+            # chỉ tự phục hồi sau 10 phút nhờ ContentPipelineReconciler. Log ERROR kèm raw
+            # message để còn có dấu vết tra cứu/cảnh báo được.
+            logger.error(f"Dropping malformed pipeline message, no mediaId — cannot route result. raw={_safe_dump(data)}")
         return
     logger.info(f"Processing pipeline job: mediaId={job.media_id}, type={job.media_type}")
 
@@ -215,7 +226,10 @@ async def _process_pipeline_job(data: dict):
         # Blocking S3/CPU work — run in a thread so it doesn't stall the event loop
         # and starve the Kafka consumer's heartbeat, which causes session timeouts
         # and endless redelivery of the same message.
-        file_bytes = await asyncio.to_thread(download_from_s3, job.s3_key, job.s3_bucket)
+        # max_bytes chặn NGAY tại HeadObject, trước khi .read() cả file vào RAM — không có
+        # cap này, 1 object quá khổ (bug config, hoặc key S3 bị thao túng) x 8 job chạy
+        # song song đủ để OOM cả service.
+        file_bytes = await asyncio.to_thread(download_from_s3, job.s3_key, job.s3_bucket, MAX_FILE_SIZE)
         filename = job.s3_key.rsplit("/", 1)[-1] if "/" in job.s3_key else job.s3_key
 
         # Generate Preview — bọc asyncio.to_thread giống download_from_s3 ở trên. Trước đây
@@ -373,13 +387,17 @@ async def _process_moderation_job(data: dict):
                 media_id,
                 _moderation_error_result(media_id, data.get("correlationId") or "", f"Invalid job message: {e}"),
             )
+        else:
+            logger.error(f"Dropping malformed moderation message, no mediaId — cannot route result. raw={_safe_dump(data)}")
         return
     logger.info(f"Processing moderation job: mediaId={job.media_id}, type={job.media_type}")
 
     try:
         # Blocking S3/Rekognition work — run in a thread, same reasoning as the
-        # copyright pipeline (avoid starving the Kafka consumer's heartbeat).
-        file_bytes = await asyncio.to_thread(download_from_s3, job.s3_key, job.s3_bucket)
+        # copyright pipeline (avoid starving the Kafka consumer's heartbeat). Đường kiểm
+        # duyệt này trước đây KHÔNG có giới hạn dung lượng nào (chỉ process_fingerprint
+        # mới check) — thêm cap giống hệt đường bản quyền để tránh OOM.
+        file_bytes = await asyncio.to_thread(download_from_s3, job.s3_key, job.s3_bucket, MAX_FILE_SIZE)
         result = await asyncio.to_thread(
             moderate_media, file_bytes, job.media_type, job.media_id, job.correlation_id
         )

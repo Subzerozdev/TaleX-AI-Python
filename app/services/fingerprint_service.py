@@ -13,8 +13,11 @@ Luồng:
   9. Trả kết quả
 """
 
+import threading
+
 from loguru import logger
 
+from app.core.config import settings
 from app.fingerprint.extractor import extract_frames_from_video, extract_image
 from app.fingerprint.hasher import hash_frames, hash_image, VECTOR_DIM
 from app.fingerprint.matcher import match_image_violation, match_segments
@@ -37,8 +40,37 @@ VIDEO_EXTENSIONS = {".mp4", ".avi", ".mkv", ".mov", ".webm", ".flv"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".jfif"}
 ALLOWED_EXTENSIONS = VIDEO_EXTENSIONS | IMAGE_EXTENSIONS
 
-# Max file size (bytes)
-MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+# Max file size (bytes) — nguồn sự thật duy nhất, dùng chung cho cả _validate_file() và
+# cap tải S3 (kafka_consumer_service.py) để tránh lệch cấu hình giữa 2 chỗ.
+MAX_FILE_SIZE = settings.FINGERPRINT_MAX_FILE_SIZE_MB * 1024 * 1024
+
+
+class StaleJobError(Exception):
+    """Raised when a process_fingerprint() run is superseded by a newer job for the same
+    media_id before reaching its decisive Milvus write — expected under timeout+retry."""
+
+
+# asyncio.wait_for() ở kafka_consumer_service.py chỉ hủy việc CHỜ — thread thật chạy
+# process_fingerprint() vẫn tiếp tục sau khi job đã "timeout" ở tầng trên. Nếu creator
+# retry, job mới cho CÙNG media_id có thể chạy song song với thread mồ côi của lần trước;
+# thread cũ ghi delete+insert muộn có thể chồng lên/xóa mất kết quả đúng của lần retry.
+# Bộ đếm generation theo media_id: mỗi lần process_fingerprint() được gọi cho 1 media_id,
+# tự nhận số thứ tự mới nhất — thread nào không còn giữ số mới nhất tại thời điểm SẮP ghi
+# (ngay trước delete và ngay trước insert) thì bỏ qua thao tác ghi đó (StaleJobError).
+_media_generation: dict[str, int] = {}
+_media_gen_lock = threading.Lock()
+
+
+def _claim_generation(media_id: str) -> int:
+    with _media_gen_lock:
+        gen = _media_generation.get(media_id, 0) + 1
+        _media_generation[media_id] = gen
+        return gen
+
+
+def _is_current_generation(media_id: str, my_gen: int) -> bool:
+    with _media_gen_lock:
+        return _media_generation.get(media_id) == my_gen
 
 
 def process_fingerprint(
@@ -65,6 +97,10 @@ def process_fingerprint(
     # Validate file
     _validate_file(file_bytes, filename)
 
+    # Nhận số generation MỚI NHẤT cho media_id này — nếu 1 lần gọi khác (retry) nhận số
+    # mới hơn trước khi lần này kịp ghi, lần này coi là "cũ" và bỏ qua ghi (xem StaleJobError).
+    my_gen = _claim_generation(media_id)
+
     # Xác định loại file
     ext = _get_extension(filename)
     is_video = ext in VIDEO_EXTENSIONS
@@ -75,6 +111,10 @@ def process_fingerprint(
     else:
         fingerprints = _process_image(file_bytes)
 
+    if not _is_current_generation(media_id, my_gen):
+        logger.info(f"Fingerprint: superseded by newer job for media_id={media_id}, dropping stale write")
+        raise StaleJobError(media_id)
+
     # Xóa fingerprint cũ nếu media_id đã tồn tại (upsert)
     delete_by_media_id(media_id)
 
@@ -82,6 +122,12 @@ def process_fingerprint(
     violations = _find_violations(
         fingerprints, exclude_media_id=media_id, exclude_creator_id=creator_id, is_video=is_video
     )
+
+    if not _is_current_generation(media_id, my_gen):
+        # Job mới hơn đã claim generation giữa lúc delete và insert — KHÔNG insert đè lên
+        # dữ liệu job mới (đã tự delete+insert đúng của nó), nếu không sẽ mất trắng media_id.
+        logger.info(f"Fingerprint: superseded by newer job for media_id={media_id}, dropping stale insert")
+        raise StaleJobError(media_id)
 
     # Lưu fingerprints mới vào Milvus
     insert_fingerprints(media_id, creator_id, fingerprints)
@@ -198,7 +244,11 @@ def _find_violations(
     # Search Milvus — loại trừ cùng creator NGAY TẠI Milvus (xem docstring search_similar),
     # không chỉ lọc sau ở matcher.py, để không bỏ sót vi phạm thật với creator khác bị các
     # trang cũ của chính creator này chiếm hết chỗ trong top_k.
-    search_results = search_similar(vectors, top_k=3, exclude_creator_id=exclude_creator_id or None)
+    # top_k ảnh rộng hơn video hẳn (xem config.py FINGERPRINT_IMAGE_TOP_K) — ảnh chỉ 1 vector
+    # nên top_k=3 giới hạn cả mạng lưới chỉ 3 ứng viên, dễ bị vài tài khoản đạo nội dung
+    # chiếm hết chỗ, đẩy nguồn gốc thật ra ngoài; video giữ 3 vì đã tổng hợp qua nhiều frame.
+    top_k = 3 if is_video else settings.FINGERPRINT_IMAGE_TOP_K
+    search_results = search_similar(vectors, top_k=top_k, exclude_creator_id=exclude_creator_id or None)
 
     if not search_results:
         return []
