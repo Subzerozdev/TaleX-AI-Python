@@ -108,18 +108,15 @@ async def consume_loop():
         logger.info("Kafka consumer stopped")
 
 
-# Giới hạn số job chạy song song cùng lúc (tránh làm quá tải Rekognition/Milvus/S3, và
-# tránh vượt mem_limit của container — xem docker-compose.yml). Đặt ở module-level để chặn
-# đúng across nhiều batch liền kề, không chỉ trong 1 batch.
+# Giới hạn số job chạy song song cùng lúc (tránh làm quá tải Rekognition/Milvus/S3). Đặt ở
+# module-level để chặn đúng across nhiều batch liền kề, không chỉ trong 1 batch.
 #
-# VIDEO và ẢNH tốn RAM khác hẳn nhau nên tách 2 semaphore riêng thay vì dùng chung 1 số:
-# ảnh nhẹ (không FFmpeg, 1 file nhỏ) nên giữ được mức song song cao (8). Video mỗi job
-# trích tới FINGERPRINT_MAX_FRAMES=300 frame PNG giữ hết trong RAM cùng lúc (extractor.py)
-# cộng thêm tiến trình FFmpeg riêng — ước tính ~400-500MB/job. Nếu dùng chung số 8 cho cả
-# 2 loại, 8 video chạy cùng lúc (trường hợp xấu nhất) có thể tốn ~4GB, vượt xa mem_limit
-# container (2GB) → bị Docker kill liên tục. Giới hạn video thấp hơn hẳn (3) để trường hợp
-# xấu nhất vẫn nằm trong ngân sách RAM.
-_VIDEO_JOB_SEMAPHORE = asyncio.Semaphore(3)
+# VIDEO tách semaphore riêng vì mỗi job trích tới FINGERPRINT_MAX_FRAMES=300 frame PNG giữ
+# hết trong RAM cùng lúc (extractor.py) cộng thêm tiến trình FFmpeg riêng — ước tính ~400-
+# 500MB/job, nặng hơn hẳn ảnh. Nâng lên bằng mức ảnh (8) để rút ngắn thời gian xử lý hàng
+# đợi kiểm duyệt/bản quyền — đổi lại mem_limit của container đã tăng lên 4g (xem
+# docker-compose.yml) để chịu được worst-case ~8 video chạy cùng lúc (~4GB).
+_VIDEO_JOB_SEMAPHORE = asyncio.Semaphore(8)
 _IMAGE_JOB_SEMAPHORE = asyncio.Semaphore(8)
 
 # consume_loop() dùng asyncio.gather() đợi TOÀN BỘ job trong 1 batch xong mới commit() rồi
