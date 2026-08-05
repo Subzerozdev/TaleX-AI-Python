@@ -17,6 +17,11 @@ jobs:
           port: 22
           command_timeout: 30m
           script: |
+            set -e
+            # Thiếu set -e trước đây: nếu git pull lỗi (vd xung đột với file sửa tay trên
+            # VPS), script vẫn chạy tiếp và build lại đúng code CŨ — cùng lớp lỗi với
+            # docker-compose-fail đã vá bên dưới ("job xong trong 13s, container không hề
+            # restart"), chỉ khác ở bước git pull thay vì docker build.
             cd ~/TaleX-AI-Python || git clone ${{ secrets.REPO_URL }} ~/TaleX-AI-Python && cd ~/TaleX-AI-Python
             git pull origin main
 
@@ -95,4 +100,7 @@ jobs:
               fi
               sleep 5
             done
+            # Lệnh cuối trước đây là echo (luôn exit 0) — CI báo xanh dù health check thật
+            # sự timeout. exit 1 để CI báo đỏ đúng.
             echo "WARNING: AI service health check failed after 120s"
+            exit 1
