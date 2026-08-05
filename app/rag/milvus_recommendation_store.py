@@ -70,7 +70,10 @@ def insert_series_vector(series_id: str, vector: list[float]) -> None:
     delete_by_series_id(series_id)
 
     collection.insert([[series_id], [vector]])
-    collection.flush()
+    # Không gọi flush() thủ công ở đây — Milvus tự flush theo ngưỡng segment/thời gian
+    # riêng. Gọi flush() sau MỌI insert/delete (series này bị CDC upsert lặp lại liên tục)
+    # khiến Milvus tự kích hoạt rate limiter bảo vệ (rate limit exceeded[rate=0.1]), làm
+    # mỗi lần xử lý mất 3-4 phút chờ retry thay vì dưới 1 giây — nghẽn cả hàng đợi Kafka.
     logger.debug(f"Inserted vector for series_id={series_id}")
 
 def search_similar_series(vector: list[float], top_k: int = 10) -> list[str]:
@@ -99,7 +102,7 @@ def delete_by_series_id(series_id: str) -> None:
     collection = get_collection()
     expr = f'series_id == "{series_id}"'
     collection.delete(expr)
-    collection.flush()
+    # Xem giải thích ở insert_series_vector() — không flush() thủ công.
 
 def get_vector_by_series_id(series_id: str) -> list[float] | None:
     """Lấy vector của 1 series từ Milvus (nếu có)."""

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import ssl
+import time
 from datetime import datetime
 
 from aiokafka import AIOKafkaConsumer
@@ -118,6 +119,15 @@ async def consume_loop():
 # docker-compose.yml) để chịu được worst-case ~8 video chạy cùng lúc (~4GB).
 _VIDEO_JOB_SEMAPHORE = asyncio.Semaphore(8)
 _IMAGE_JOB_SEMAPHORE = asyncio.Semaphore(8)
+
+# Debounce cho _process_debezium_series: đã ghi nhận thực tế 1 series bị CDC gửi lại
+# event upsert liên tục nhiều lần/phút (nguyên nhân sâu xa nằm ở tầng Debezium/Kafka
+# Connect, chưa xác định được cụ thể) — mỗi lần trigger cả 1 vòng "symmetric update"
+# cho tới 10 series liên quan (xem _process_debezium_series), nhân tác động lên nhiều
+# lần. Guard này chặn xử lý lại CÙNG 1 series quá gần nhau, không phụ thuộc vào việc
+# tìm ra nguyên nhân CDC gửi lặp — an toàn vì service chỉ chạy 1 instance duy nhất.
+_SERIES_UPSERT_DEBOUNCE_SECONDS = 30
+_last_series_upsert_at: dict[str, float] = {}
 
 # consume_loop() dùng asyncio.gather() đợi TOÀN BỘ job trong 1 batch xong mới commit() rồi
 # mới getmany() batch tiếp — nếu 1 job treo vô thời hạn (mạng chập chờn khi gọi S3/Rekognition,
@@ -361,6 +371,16 @@ async def _process_debezium_series(data: dict):
                 
             # Process Upsert only for valid active statuses
             if status in ["PUBLISHED", "SCHEDULED"]:
+                now = time.monotonic()
+                last_at = _last_series_upsert_at.get(series_id)
+                if last_at is not None and (now - last_at) < _SERIES_UPSERT_DEBOUNCE_SECONDS:
+                    logger.info(
+                        f"Skipped duplicate Upsert for series_id={series_id} "
+                        f"(processed {now - last_at:.1f}s ago, debounce={_SERIES_UPSERT_DEBOUNCE_SECONDS}s)"
+                    )
+                    return
+                _last_series_upsert_at[series_id] = now
+
                 logger.info(f"Processing Upsert for series_id={series_id} due to status={status}")
                 metadata = await get_series_metadata(str(series_id))
                 categories = metadata.get("category", [])
