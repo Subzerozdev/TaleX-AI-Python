@@ -5,6 +5,11 @@ WORKDIR /app
 
 COPY requirements.txt .
 
+# sentence-transformers kéo theo torch — pip mặc định cài bản CÓ CUDA (vài GB, kèm hàng
+# loạt gói nvidia-*) dù VPS này không có GPU, từng làm hết sạch dung lượng đĩa lúc build
+# (lỗi thật: "no space left on device"). Cài torch bản CPU-only TRƯỚC để khi
+# sentence-transformers yêu cầu torch, pip thấy đã thỏa mãn, không tự tải lại bản CUDA.
+RUN pip install --no-cache-dir --prefix=/install torch --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 
