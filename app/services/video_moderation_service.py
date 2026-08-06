@@ -23,6 +23,18 @@ from app.core.config import settings
 # Số lời gọi Rekognition chạy song song — đủ nhanh nhưng không vượt rate limit tài khoản.
 _REKOGNITION_MAX_CONCURRENCY = 8
 
+# Nhóm L1 taxonomy dùng ngưỡng confidence riêng (thấp hơn) — xem giải thích ở
+# REKOGNITION_VIOLENCE_CONFIDENCE_THRESHOLD trong config.py.
+_LOWER_THRESHOLD_CATEGORIES = {"Violence", "Visually Disturbing"}
+
+
+def _threshold_for_label(label: dict) -> float:
+    # parent_name rỗng khi label CHÍNH LÀ danh mục gốc (L1, vd trả thẳng "Violence" không
+    # qua label con) — phải tự kiểm cả label["name"] trong trường hợp đó, không chỉ parent_name.
+    if label.get("parent_name") in _LOWER_THRESHOLD_CATEGORIES or label.get("name") in _LOWER_THRESHOLD_CATEGORIES:
+        return settings.REKOGNITION_VIOLENCE_CONFIDENCE_THRESHOLD
+    return settings.REKOGNITION_CONFIDENCE_THRESHOLD
+
 
 def moderate_media(file_bytes: bytes, media_type: str, media_id: str, correlation_id: str) -> dict:
     """Run content moderation. Returns camelCase dict for Kafka."""
@@ -93,9 +105,8 @@ def _moderate_image(file_bytes: bytes) -> tuple[list[dict], list]:
     """Single Rekognition call for image."""
     labels = detect_moderation_labels(_normalize_for_rekognition(file_bytes))
     violations = []
-    threshold = settings.REKOGNITION_CONFIDENCE_THRESHOLD
     for label in labels:
-        if label["confidence"] >= threshold:
+        if label["confidence"] >= _threshold_for_label(label):
             violations.append({
                 "timestampMs": 0.0,
                 "endTimestampMs": 0.0,
@@ -111,7 +122,6 @@ def _moderate_video(file_bytes: bytes) -> tuple[list[dict], list]:
     frames = _extract_moderation_frames(file_bytes)
     logger.info(f"Extracted {len(frames)} frames for moderation")
 
-    threshold = settings.REKOGNITION_CONFIDENCE_THRESHOLD
     all_raw: list[dict | None] = [None] * len(frames)
     all_violations = []
 
@@ -127,7 +137,7 @@ def _moderate_video(file_bytes: bytes) -> tuple[list[dict], list]:
             index, timestamp_sec, labels = future.result()
             all_raw[index] = {"timestamp": timestamp_sec, "labels": labels}
             for label in labels:
-                if label["confidence"] >= threshold:
+                if label["confidence"] >= _threshold_for_label(label):
                     all_violations.append({
                         "timestampMs": timestamp_sec * 1000,
                         "endTimestampMs": (timestamp_sec + settings.MODERATION_FRAME_INTERVAL) * 1000,

@@ -83,6 +83,13 @@ class Settings:
 
     # Rekognition Content Moderation
     REKOGNITION_CONFIDENCE_THRESHOLD: float = float(os.getenv("REKOGNITION_CONFIDENCE_THRESHOLD", "80.0"))
+    # Ngưỡng riêng, THẤP HƠN, cho nhóm Violence/Visually Disturbing — Rekognition tự phân
+    # loại nội dung Animated/Illustrated khác ảnh chụp thật (xem docs AWS), dấu hiệu bạo lực
+    # (máu, vết thương, vũ khí) trên tranh vẽ manga/manhwa bị cách điệu hóa nên confidence
+    # thường thấp hơn hẳn so với ảnh thật — dùng chung ngưỡng 80% với Nudity/Suggestive
+    # (vẫn rõ nét dù là tranh vẽ) khiến nội dung bạo lực lọt qua kiểm duyệt.
+    REKOGNITION_VIOLENCE_CONFIDENCE_THRESHOLD: float = float(
+        os.getenv("REKOGNITION_VIOLENCE_CONFIDENCE_THRESHOLD", "60.0"))
     REKOGNITION_MAX_FRAMES: int = int(os.getenv("REKOGNITION_MAX_FRAMES", "30"))
     MODERATION_FRAME_INTERVAL: float = float(os.getenv("MODERATION_FRAME_INTERVAL", "2.0"))
 
