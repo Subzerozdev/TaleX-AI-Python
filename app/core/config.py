@@ -97,6 +97,10 @@ class Settings:
     MONGO_URI: str = os.getenv("MONGO_URI", "")
     MONGO_DB_NAME: str = os.getenv("MONGO_DB_NAME", "TaleX-FeatureStore")
 
+    # Watermark
+    WATERMARK_PASSWORD_IMG: int = int(os.getenv("WATERMARK_PASSWORD_IMG", "1"))
+    WATERMARK_PASSWORD_WM: int = int(os.getenv("WATERMARK_PASSWORD_WM", "1"))
+
 
 # Singleton — toàn app dùng chung 1 instance
 settings = Settings()

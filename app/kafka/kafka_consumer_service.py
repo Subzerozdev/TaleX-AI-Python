@@ -23,6 +23,7 @@ from app.services.fingerprint_service import MAX_FILE_SIZE, process_fingerprint,
 from app.services.video_moderation_service import moderate_media
 from app.services.recommendation_service import process_series_upsert
 from app.services.preview_service import generate_image_preview, generate_video_preview
+from app.services.watermark_service import embed_image_watermark, embed_video_audio_watermark
 
 def _build_ssl_context() -> ssl.SSLContext | None:
     """Build SSL context from Aiven PEM cert paths."""
@@ -141,7 +142,7 @@ _last_series_upsert_at: dict[str, float] = {}
 # hơn 60s một cách HỢP LỆ, không phải bị treo. Dùng chung 1 timeout cho ảnh lẫn video sẽ báo
 # lỗi oan cho video hợp lệ (job "timeout" trong khi ffmpeg bên dưới vẫn đang chạy đúng).
 _JOB_PROCESSING_TIMEOUT_SECONDS = 60
-_VIDEO_JOB_PROCESSING_TIMEOUT_SECONDS = 180
+_VIDEO_JOB_PROCESSING_TIMEOUT_SECONDS = 600
 
 
 def _safe_dump(d: dict) -> str:
@@ -250,6 +251,24 @@ async def _process_pipeline_job(data: dict):
         # song song đủ để OOM cả service.
         file_bytes = await asyncio.to_thread(download_from_s3, job.s3_key, job.s3_bucket, MAX_FILE_SIZE)
         filename = job.s3_key.rsplit("/", 1)[-1] if "/" in job.s3_key else job.s3_key
+
+        # Nhúng watermark (IMAGE: blind_watermark, VIDEO: audio_watermark)
+        try:
+            if job.media_type == "IMAGE":
+                file_bytes = await asyncio.to_thread(embed_image_watermark, file_bytes, job.creator_id)
+            elif job.media_type == "VIDEO":
+                file_bytes = await asyncio.to_thread(embed_video_audio_watermark, file_bytes, job.creator_id)
+            
+            # Ghi đè file có watermark lên S3
+            content_type = "image/jpeg" if job.media_type == "IMAGE" else "video/mp4"
+            await asyncio.to_thread(
+                upload_to_s3, job.s3_key, file_bytes, content_type=content_type, bucket=job.s3_bucket
+            )
+            logger.info(f"Watermark embedded and uploaded for {job.media_id}")
+        except Exception as we:
+            logger.error(f"Failed to embed watermark for {job.media_id}: {we}")
+            # Nếu nhúng watermark thất bại, ta vẫn cho luồng chạy tiếp với file gốc để 
+            # ít nhất vẫn kiểm duyệt và tìm bản quyền được.
 
         # Generate Preview — bọc asyncio.to_thread giống download_from_s3 ở trên. Trước đây
         # gọi trực tiếp (đồng bộ): blur ảnh (CPU) và đặc biệt ffmpeg cắt video preview có

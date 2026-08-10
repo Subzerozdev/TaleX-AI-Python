@@ -46,3 +46,7 @@ motor==3.5.0
 # Recommend Ranking
 lightgbm==4.6.0
 dnspython>=2.0.0
+
+# Watermark
+blind-watermark>=0.4.0
+scipy>=1.13.0
