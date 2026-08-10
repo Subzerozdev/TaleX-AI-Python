@@ -24,9 +24,23 @@ def _unpad_id(padded_id: str) -> str:
     # Dọn dẹp khoảng trắng dư thừa
     return padded_id.strip()
 
+def _string_to_bit_array(text: str):
+    return [int(b) for b in ''.join([f"{c:08b}" for c in text.encode('utf-8')])]
+
+def _bit_array_to_string(bits):
+    chars = []
+    for b in range(0, len(bits), 8):
+        byte = bits[b:b+8]
+        try:
+            chars.append(chr(int(''.join([str(int(bit)) for bit in byte]), 2)))
+        except:
+            pass
+    return ''.join(chars)
+
 def embed_image_watermark(image_bytes: bytes, creator_id: str) -> bytes:
     """Nhúng watermark ẩn vào hình ảnh (DWT-DCT-SVD)."""
     padded_id = _pad_id(creator_id)
+    bits = _string_to_bit_array(padded_id)
     
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_in, \
          tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_out:
@@ -40,7 +54,7 @@ def embed_image_watermark(image_bytes: bytes, creator_id: str) -> bytes:
                 password_wm=settings.WATERMARK_PASSWORD_WM
             )
             bwm.read_img(tmp_in.name)
-            bwm.read_wm(padded_id, mode='str')
+            bwm.read_wm(bits, mode='bit')
             bwm.embed(tmp_out.name)
             
             with open(tmp_out.name, "rb") as f:
@@ -65,9 +79,9 @@ def extract_image_watermark(image_bytes: bytes) -> str:
                 password_img=settings.WATERMARK_PASSWORD_IMG, 
                 password_wm=settings.WATERMARK_PASSWORD_WM
             )
-            # wm_shape requires the number of bits. Since we pad to WM_SHAPE_LENGTH bytes, it's WM_SHAPE_LENGTH * 8 bits
-            extracted = bwm.extract(tmp_in.name, wm_shape=WM_SHAPE_LENGTH * 8, mode='str')
-            return _unpad_id(extracted)
+            extracted_bits = bwm.extract(tmp_in.name, wm_shape=WM_SHAPE_LENGTH * 8, mode='bit')
+            extracted_str = _bit_array_to_string(extracted_bits)
+            return _unpad_id(extracted_str)
         except Exception as e:
             logger.error(f"Lỗi khi trích xuất blind watermark ảnh: {e}")
             raise e
