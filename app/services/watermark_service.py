@@ -25,14 +25,40 @@ def _unpad_id(padded_id: str) -> str:
     # Dọn dẹp khoảng trắng dư thừa
     return padded_id.strip()
 
+def _ensure_3_channels(image_bytes: bytes) -> bytes:
+    """Xử lý ảnh grayscale (2D) hoặc RGBA (4D) về BGR (3D) để tránh lỗi tuple index out of range của blind_watermark."""
+    import cv2
+    import numpy as np
+    
+    # Đọc ảnh từ byte array
+    np_arr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
+    
+    if img is None:
+        raise ValueError("Không thể đọc định dạng ảnh này")
+        
+    # Nếu là ảnh Grayscale (chỉ có 2 chiều H, W) -> Chuyển sang BGR (3 chiều)
+    if len(img.shape) == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    
+    # Lưu lại thành file byte PNG
+    success, encoded_image = cv2.imencode('.png', img)
+    if not success:
+        raise ValueError("Lỗi khi encode ảnh sang định dạng PNG")
+        
+    return encoded_image.tobytes()
+
 def embed_image_watermark(image_bytes: bytes, creator_id: str) -> bytes:
     """Nhúng watermark ẩn vào hình ảnh (DWT-DCT-SVD)."""
     padded_id = _pad_id(creator_id)
     
+    # Xử lý lỗi tuple index out of range cho ảnh đen trắng
+    processed_image_bytes = _ensure_3_channels(image_bytes)
+    
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_in, \
          tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_out:
         
-        tmp_in.write(image_bytes)
+        tmp_in.write(processed_image_bytes)
         tmp_in.flush()
         
         try:
@@ -58,8 +84,11 @@ def embed_image_watermark(image_bytes: bytes, creator_id: str) -> bytes:
 
 def extract_image_watermark(image_bytes: bytes) -> str:
     """Trích xuất watermark ẩn từ hình ảnh."""
+    # Xử lý lỗi tuple index out of range cho ảnh đen trắng
+    processed_image_bytes = _ensure_3_channels(image_bytes)
+    
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_in:
-        tmp_in.write(image_bytes)
+        tmp_in.write(processed_image_bytes)
         tmp_in.flush()
         
         try:
