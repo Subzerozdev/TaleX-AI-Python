@@ -262,9 +262,20 @@ async def _process_pipeline_job(data: dict):
             # Ghi đè file có watermark lên S3
             # QUAN TRỌNG: Phải luôn lưu là image/png vì thuật toán DWT-DCT-SVD với mode='str' cực kỳ dễ bị 
             # phá hủy (ra ký tự rác) nếu bị nén lossy bởi định dạng JPEG.
-            content_type = "image/png" if job.media_type == "IMAGE" else "video/mp4"
+            original_s3_key = job.s3_key
+            if job.media_type == "IMAGE":
+                # Tạo một S3 key hoàn toàn MỚI (đổi đuôi thành _wm.png) để tránh việc
+                # CloudFront/Cloudflare đã cache file gốc không có watermark ở URL cũ.
+                # Cách này đảm bảo user LUÔN tải được file mới tinh (cache miss).
+                base_key = original_s3_key.rsplit('.', 1)[0]
+                new_s3_key = f"{base_key}_wm.png"
+                content_type = "image/png"
+            else:
+                new_s3_key = original_s3_key
+                content_type = "video/mp4"
+                
             await asyncio.to_thread(
-                upload_to_s3, job.s3_key, file_bytes, content_type=content_type, bucket=job.s3_bucket
+                upload_to_s3, new_s3_key, file_bytes, content_type=content_type, bucket=job.s3_bucket
             )
             logger.info(f"Watermark embedded and uploaded for {job.media_id}")
         except Exception as we:
@@ -323,6 +334,7 @@ async def _process_pipeline_job(data: dict):
             "success": True,
             "errorMessage": None,
             "previewS3Key": preview_s3_key,
+            "watermarkedS3Key": new_s3_key if job.media_type == "IMAGE" else None,
         }
         await send_copyright_result(job.media_id, result)
 
