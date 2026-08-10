@@ -55,30 +55,31 @@ def embed_image_watermark(image_bytes: bytes, creator_id: str) -> bytes:
     # Xử lý lỗi tuple index out of range cho ảnh đen trắng
     processed_image_bytes = _ensure_3_channels(image_bytes)
     
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_in, \
-         tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_out:
+    tmp_in = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    tmp_out = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
         
-        tmp_in.write(processed_image_bytes)
-        tmp_in.flush()
+    tmp_in.write(processed_image_bytes)
+    tmp_in.close()
+    tmp_out.close()
         
-        try:
-            bwm = WaterMark(
-                password_img=settings.WATERMARK_PASSWORD_IMG, 
-                password_wm=settings.WATERMARK_PASSWORD_WM
-            )
-            bwm.read_img(tmp_in.name)
-            # Sử dụng chuẩn mode='str' y hệt như bản gốc
-            bwm.read_wm(padded_id, mode='str')
-            bwm.embed(tmp_out.name)
-            
-            with open(tmp_out.name, "rb") as f:
-                out_bytes = f.read()
-        except Exception as e:
-            logger.error(f"Lỗi khi nhúng blind watermark ảnh: {e}")
-            raise e
-        finally:
-            os.remove(tmp_in.name)
-            os.remove(tmp_out.name)
+    try:
+        bwm = WaterMark(
+            password_img=settings.WATERMARK_PASSWORD_IMG, 
+            password_wm=settings.WATERMARK_PASSWORD_WM
+        )
+        bwm.read_img(tmp_in.name)
+        # Sử dụng chuẩn mode='str' y hệt như bản gốc
+        bwm.read_wm(padded_id, mode='str')
+        bwm.embed(tmp_out.name)
+        
+        with open(tmp_out.name, "rb") as f:
+            out_bytes = f.read()
+    except Exception as e:
+        logger.error(f"Lỗi khi nhúng blind watermark ảnh: {e}")
+        raise e
+    finally:
+        if os.path.exists(tmp_in.name): os.remove(tmp_in.name)
+        if os.path.exists(tmp_out.name): os.remove(tmp_out.name)
             
     return out_bytes
 
@@ -87,26 +88,26 @@ def extract_image_watermark(image_bytes: bytes) -> str:
     # Xử lý lỗi tuple index out of range cho ảnh đen trắng
     processed_image_bytes = _ensure_3_channels(image_bytes)
     
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_in:
-        tmp_in.write(processed_image_bytes)
-        tmp_in.flush()
+    tmp_in = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    tmp_in.write(processed_image_bytes)
+    tmp_in.close()
         
-        try:
-            bwm = WaterMark(
-                password_img=settings.WATERMARK_PASSWORD_IMG, 
-                password_wm=settings.WATERMARK_PASSWORD_WM
-            )
-            # Vì chuỗi luôn bắt đầu bằng chữ "I" (mã ASCII là 73 = 01001001)
-            # Hàm int.from_bytes của thư viện sẽ CẮT MẤT 1 số 0 ở đầu của bit đầu tiên.
-            # Do đó 64 ký tự = 64 * 8 = 512 bits, trừ đi 1 bit số 0 bị cắt, kết quả LUÔN LÀ 511 bits!
-            wm_shape_exact = (WM_SHAPE_LENGTH * 8) - 1
-            extracted = bwm.extract(tmp_in.name, wm_shape=wm_shape_exact, mode='str')
-            return _unpad_id(extracted)
-        except Exception as e:
-            logger.error(f"Lỗi khi trích xuất blind watermark ảnh: {e}")
-            raise e
-        finally:
-            os.remove(tmp_in.name)
+    try:
+        bwm = WaterMark(
+            password_img=settings.WATERMARK_PASSWORD_IMG, 
+            password_wm=settings.WATERMARK_PASSWORD_WM
+        )
+        # Vì chuỗi luôn bắt đầu bằng chữ "I" (mã ASCII là 73 = 01001001)
+        # Hàm int.from_bytes của thư viện sẽ CẮT MẤT 1 số 0 ở đầu của bit đầu tiên.
+        # Do đó 64 ký tự = 64 * 8 = 512 bits, trừ đi 1 bit số 0 bị cắt, kết quả LUÔN LÀ 511 bits!
+        wm_shape_exact = (WM_SHAPE_LENGTH * 8) - 1
+        extracted = bwm.extract(tmp_in.name, wm_shape=wm_shape_exact, mode='str')
+        return _unpad_id(extracted)
+    except Exception as e:
+        logger.error(f"Lỗi khi trích xuất blind watermark ảnh: {e}")
+        raise e
+    finally:
+        if os.path.exists(tmp_in.name): os.remove(tmp_in.name)
 
 
 # ---------------------------------------------------------
@@ -145,9 +146,9 @@ def _generate_ultrasound_wav(creator_id: str, output_wav_path: str):
     audio_signal = np.concatenate(audio_data)
     
     # Chuẩn hóa về định dạng int16 (-32768 đến 32767)
-    # Tăng âm lượng siêu âm lên 20% max volume (32767 * 0.2) để sống sót qua AAC compression của AWS.
-    # Âm thanh 18kHz ở 20% âm lượng vẫn rất khó nghe thấy đối với hầu hết người lớn.
-    audio_signal = np.int16(audio_signal * 32767 * 0.2)
+    # Tăng âm lượng siêu âm lên 50% max volume (32767 * 0.5) để sống sót qua AAC compression của AWS.
+    # Âm thanh 18kHz ở 50% âm lượng vẫn rất khó nghe thấy đối với hầu hết người lớn.
+    audio_signal = np.int16(audio_signal * 32767 * 0.5)
     
     wavfile.write(output_wav_path, sample_rate, audio_signal)
 
@@ -156,52 +157,79 @@ def embed_video_audio_watermark(video_bytes: bytes, creator_id: str) -> bytes:
     """
     Trộn sóng siêu âm chứa ID vào luồng âm thanh của Video gốc.
     """
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_video_in, \
-         tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_audio_wm, \
-         tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_video_out:
+    tmp_video_in = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    tmp_audio_wm = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp_video_out = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
              
-        tmp_video_in.write(video_bytes)
-        tmp_video_in.flush()
+    tmp_video_in.write(video_bytes)
+    
+    # Đóng file handle trên Windows để FFmpeg không bị lỗi Permission (WinError 32)
+    tmp_video_in.close()
+    tmp_audio_wm.close()
+    tmp_video_out.close()
         
-        try:
-            # 1. Sinh file WAV siêu âm chứa creator_id
-            _generate_ultrasound_wav(creator_id, tmp_audio_wm.name)
-            
-            # 2. Dùng FFmpeg trộn 2 luồng audio lại, KHÔNG ĐỤNG CHẠM VÀO LUỒNG VIDEO (copy)
-            # amix=inputs=2:duration=first -> Trộn 2 tiếng, độ dài bằng file video đầu vào
-            cmd = [
-                "ffmpeg",
-                "-y",  # overwrite
-                "-i", tmp_video_in.name,
-                "-i", tmp_audio_wm.name,
+    try:
+        import json
+        
+        # 1. Kiểm tra xem video gốc có luồng audio hay không và lấy thời lượng
+        probe_cmd = [
+            "ffprobe", "-v", "quiet", "-print_format", "json",
+            "-show_streams", "-show_format", tmp_video_in.name
+        ]
+        probe_res = subprocess.run(probe_cmd, capture_output=True, text=True)
+        has_audio = False
+        video_duration = None
+        if probe_res.stdout:
+            try:
+                info = json.loads(probe_res.stdout)
+                has_audio = any(s.get("codec_type") == "audio" for s in info.get("streams", []))
+                video_duration = info.get("format", {}).get("duration")
+            except json.JSONDecodeError:
+                pass
+                
+        # 2. Sinh file WAV siêu âm chứa creator_id
+        _generate_ultrasound_wav(creator_id, tmp_audio_wm.name)
+        
+        # 3. Dùng FFmpeg ghép audio
+        cmd = ["ffmpeg", "-y", "-i", tmp_video_in.name, "-i", tmp_audio_wm.name]
+        
+        if has_audio:
+            # Trộn 2 tiếng, độ dài bằng file video đầu vào
+            cmd.extend([
                 "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=first[a]",
-                "-map", "0:v",  # Giữ nguyên video gốc
-                "-map", "[a]",  # Lấy luồng audio đã mix
-                "-c:v", "copy", # Copy nguyên xi video, siêu nhanh, không encode lại
-                "-c:a", "aac",  # Encode lại audio
-                "-loglevel", "error",
-                tmp_video_out.name
-            ]
+                "-map", "0:v", "-map", "[a]",
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "320k", "-cutoff", "20000"
+            ])
+        else:
+            # Không có audio gốc, dùng luôn audio watermark. Cắt độ dài bằng video.
+            if video_duration:
+                cmd.extend(["-t", str(video_duration)])
+            cmd.extend([
+                "-map", "0:v", "-map", "1:a",
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "320k", "-cutoff", "20000"
+            ])
             
-            result = subprocess.run(cmd, capture_output=True, timeout=60)
-            if result.returncode != 0:
-                error_msg = result.stderr.decode("utf-8", errors="replace")
-                logger.error(f"FFmpeg error: {error_msg}")
-                raise RuntimeError(f"FFmpeg audio mixing failed: {error_msg[:200]}")
-                
-            with open(tmp_video_out.name, "rb") as f:
-                out_bytes = f.read()
-                
-        except FileNotFoundError:
-            raise ValueError("Lỗi: Không tìm thấy phần mềm FFmpeg trên máy chủ. Vui lòng cài đặt FFmpeg và thêm vào biến môi trường PATH.")
-        except Exception as e:
-            logger.error(f"Lỗi khi nhúng audio watermark cho video: {e}")
-            raise e
-        finally:
-            os.remove(tmp_video_in.name)
-            os.remove(tmp_audio_wm.name)
-            os.remove(tmp_video_out.name)
+        cmd.extend(["-loglevel", "error", tmp_video_out.name])
+        
+        result = subprocess.run(cmd, capture_output=True, timeout=60)
+        if result.returncode != 0:
+            error_msg = result.stderr.decode("utf-8", errors="replace") if hasattr(result.stderr, 'decode') else str(result.stderr)
+            logger.error(f"FFmpeg error: {error_msg}")
+            raise RuntimeError(f"FFmpeg audio mixing failed: {error_msg[:200]}")
             
+        with open(tmp_video_out.name, "rb") as f:
+            out_bytes = f.read()
+            
+    except FileNotFoundError:
+        raise ValueError("Lỗi: Không tìm thấy phần mềm FFmpeg trên máy chủ. Vui lòng cài đặt FFmpeg và thêm vào biến môi trường PATH.")
+    except Exception as e:
+        logger.error(f"Lỗi khi nhúng audio watermark cho video: {e}")
+        raise e
+    finally:
+        if os.path.exists(tmp_video_in.name): os.remove(tmp_video_in.name)
+        if os.path.exists(tmp_audio_wm.name): os.remove(tmp_audio_wm.name)
+        if os.path.exists(tmp_video_out.name): os.remove(tmp_video_out.name)
+        
     return out_bytes
 
 def _binary_to_string(binary_str: str) -> str:
@@ -217,47 +245,60 @@ def extract_video_audio_watermark(video_bytes: bytes) -> str:
     """
     Trích xuất ID từ âm thanh siêu âm 18kHz của Video bằng FFT.
     """
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_video_in, \
-         tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_audio_out:
+    tmp_video_in = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    tmp_audio_out = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
              
-        tmp_video_in.write(video_bytes)
-        tmp_video_in.flush()
+    tmp_video_in.write(video_bytes)
+    
+    # Đóng file handle trên Windows
+    tmp_video_in.close()
+    tmp_audio_out.close()
         
-        try:
-            # 1. Dùng FFmpeg để tách audio ra thành file WAV mono 44.1kHz
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-i", tmp_video_in.name,
-                "-vn",            # No video
-                "-ac", "1",       # Mono
-                "-ar", "44100",   # Sample rate 44.1kHz
-                "-acodec", "pcm_s16le", # 16-bit PCM
-                "-loglevel", "error",
-                tmp_audio_out.name
-            ]
-            subprocess.run(cmd, capture_output=True, timeout=60, check=True)
+    try:
+        # 1. Dùng FFmpeg để tách audio ra thành file WAV mono 44.1kHz
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", tmp_video_in.name,
+            "-vn",            # No video
+            "-ac", "1",       # Mono
+            "-ar", "44100",   # Sample rate 44.1kHz
+            "-acodec", "pcm_s16le", # 16-bit PCM
+            "-loglevel", "error",
+            tmp_audio_out.name
+        ]
+        subprocess.run(cmd, capture_output=True, timeout=60, check=True)
+        
+        # 2. Đọc file âm thanh
+        sample_rate, audio_data = wavfile.read(tmp_audio_out.name)
+        
+        if len(audio_data) == 0:
+            raise ValueError("Không tìm thấy luồng âm thanh trong video")
             
-            # 2. Đọc file âm thanh
-            sample_rate, audio_data = wavfile.read(tmp_audio_out.name)
+        # Đảm bảo audio_data là mảng 1D
+        if len(audio_data.shape) > 1:
+            audio_data = audio_data.mean(axis=1)
             
-            if len(audio_data) == 0:
-                raise ValueError("Không tìm thấy luồng âm thanh trong video")
+        # 3. Phân tích OOK ở 18kHz (từng chunk 0.1s)
+        bit_duration = 0.1
+        chunk_size = int(sample_rate * bit_duration)
+        freq_target = 18000.0
+        
+        # HLS và amix có thể làm lệch pha (time shift) dẫn đến cắt sai bit
+        # Ta sẽ quét 10 pha (offset) khác nhau để tìm ra pha chuẩn nhất khớp với header
+        best_data_bits = None
+        
+        for phase in range(10):
+            offset = int((phase / 10.0) * chunk_size)
+            if offset + chunk_size > len(audio_data):
+                break
                 
-            # Đảm bảo audio_data là mảng 1D
-            if len(audio_data.shape) > 1:
-                audio_data = audio_data.mean(axis=1)
-                
-            # 3. Phân tích OOK ở 18kHz (từng chunk 0.1s)
-            bit_duration = 0.1
-            chunk_size = int(sample_rate * bit_duration)
-            freq_target = 18000.0
-            
-            num_chunks = len(audio_data) // chunk_size
+            audio_shifted = audio_data[offset:]
+            num_chunks = len(audio_shifted) // chunk_size
             powers = []
             
             for i in range(num_chunks):
-                chunk = audio_data[i*chunk_size : (i+1)*chunk_size]
+                chunk = audio_shifted[i*chunk_size : (i+1)*chunk_size]
                 # Thực hiện Fast Fourier Transform
                 fft_result = np.fft.rfft(chunk)
                 freqs = np.fft.rfftfreq(chunk_size, 1.0/sample_rate)
@@ -265,15 +306,14 @@ def extract_video_audio_watermark(video_bytes: bytes) -> str:
                 # Tìm index của tần số gần 18000Hz nhất
                 idx_18k = np.argmin(np.abs(freqs - freq_target))
                 
-                # Tính năng lượng quanh dải 18kHz (cộng dồn vài bin xung quanh để bù trừ nhiễu)
+                # Tính năng lượng quanh dải 18kHz
                 power = np.sum(np.abs(fft_result[max(0, idx_18k-2) : min(len(fft_result), idx_18k+3)])**2)
                 powers.append(power)
                 
             if not powers:
-                raise ValueError("Video quá ngắn để phân tích")
+                continue
                 
             # 4. Xác định ngưỡng (threshold) để phân biệt bit 1 và bit 0
-            # Dùng median của top 10% năng lượng làm tín hiệu '1', phần còn lại là '0'
             sorted_powers = np.sort(powers)
             top_10_percent = sorted_powers[int(len(sorted_powers)*0.9):]
             if len(top_10_percent) == 0:
@@ -281,38 +321,39 @@ def extract_video_audio_watermark(video_bytes: bytes) -> str:
             else:
                 threshold = np.median(top_10_percent) * 0.3 # 30% của peak
             
-            binary_sequence = ""
-            for p in powers:
-                if p > threshold:
-                    binary_sequence += "1"
-                else:
-                    binary_sequence += "0"
-                    
+            binary_sequence = "".join(["1" if p > threshold else "0" for p in powers])
+            
             # 5. Tìm chuỗi header '10101010' để đồng bộ (sync)
             header = "10101010"
             header_idx = binary_sequence.find(header)
             
-            if header_idx == -1:
-                raise ValueError("Không tìm thấy tín hiệu watermark trong video (Không thấy header)")
-                
-            # Trích xuất dữ liệu sau header
-            data_bits = binary_sequence[header_idx + len(header):]
+            if header_idx != -1:
+                # Tìm thấy header! Offset này là chính xác!
+                best_data_bits = binary_sequence[header_idx + len(header):]
+                break
+        
+        if best_data_bits is None:
+            raise ValueError("Không tìm thấy tín hiệu watermark trong video (Không thấy header)")
             
-            # 6. Dịch ngược thành string
-            creator_id_extracted = _binary_to_string(data_bits)
-            
-            # Lọc bỏ các ký tự rác (chỉ lấy ASCII in được)
-            clean_id = ''.join(c for c in creator_id_extracted if 32 <= ord(c) <= 126)
-            
-            return clean_id
-            
-            
-        except FileNotFoundError:
-            logger.error("Lỗi: Không tìm thấy FFmpeg trên máy chủ.")
-            raise ValueError("Lỗi: Không tìm thấy phần mềm FFmpeg trên máy chủ. Vui lòng cài đặt FFmpeg và thêm vào biến môi trường PATH.")
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Lỗi FFmpeg khi trích xuất audio: {e}")
-            raise RuntimeError("Lỗi khi tách âm thanh từ video")
-        except Exception as e:
-            logger.error(f"Lỗi khi giải mã audio watermark: {e}")
-            raise e
+        data_bits = best_data_bits
+        
+        # 6. Dịch ngược thành string
+        creator_id_extracted = _binary_to_string(data_bits)
+        
+        # Lọc bỏ các ký tự rác (chỉ lấy ASCII in được)
+        clean_id = ''.join(c for c in creator_id_extracted if 32 <= ord(c) <= 126)
+        
+        return clean_id
+        
+    except FileNotFoundError:
+        logger.error("Lỗi: Không tìm thấy FFmpeg trên máy chủ.")
+        raise ValueError("Lỗi: Không tìm thấy phần mềm FFmpeg trên máy chủ. Vui lòng cài đặt FFmpeg và thêm vào biến môi trường PATH.")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Lỗi FFmpeg khi trích xuất audio: {e}")
+        raise RuntimeError("Lỗi khi tách âm thanh từ video")
+    except Exception as e:
+        logger.error(f"Lỗi khi giải mã audio watermark: {e}")
+        raise e
+    finally:
+        if os.path.exists(tmp_video_in.name): os.remove(tmp_video_in.name)
+        if os.path.exists(tmp_audio_out.name): os.remove(tmp_audio_out.name)
