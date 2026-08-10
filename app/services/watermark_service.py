@@ -145,8 +145,9 @@ def _generate_ultrasound_wav(creator_id: str, output_wav_path: str):
     audio_signal = np.concatenate(audio_data)
     
     # Chuẩn hóa về định dạng int16 (-32768 đến 32767)
-    # Để âm lượng siêu âm nhỏ (10% max volume) để không làm méo tiếng gốc quá nhiều
-    audio_signal = np.int16(audio_signal * 3276 * 0.1)
+    # Tăng âm lượng siêu âm lên 20% max volume (32767 * 0.2) để sống sót qua AAC compression của AWS.
+    # Âm thanh 18kHz ở 20% âm lượng vẫn rất khó nghe thấy đối với hầu hết người lớn.
+    audio_signal = np.int16(audio_signal * 32767 * 0.2)
     
     wavfile.write(output_wav_path, sample_rate, audio_signal)
 
