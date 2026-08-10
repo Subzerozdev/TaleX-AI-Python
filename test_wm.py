@@ -1,7 +1,7 @@
 import tempfile
-from blind_watermark import WaterMark
-import numpy as np
 import cv2
+import numpy as np
+from blind_watermark import WaterMark
 
 WM_SHAPE_LENGTH = 64
 
@@ -13,32 +13,55 @@ def _pad_id(creator_id: str) -> str:
 def _unpad_id(padded_id: str) -> str:
     return padded_id.strip()
 
+def _ensure_3_channels(image_bytes: bytes) -> bytes:
+    np_arr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
+    if len(img.shape) == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    success, encoded_image = cv2.imencode('.png', img)
+    return encoded_image.tobytes()
+
 def test():
+    # 1. Create original 3-channel image
     img = np.random.randint(0, 255, (256, 256, 3), dtype=np.uint8)
-    cv2.imwrite('test.png', img)
+    cv2.imwrite('test_orig.png', img)
+    
+    with open('test_orig.png', 'rb') as f:
+        orig_bytes = f.read()
 
-    creator_id = '9iP'
-    padded_id = _pad_id(creator_id)
-
-    bwm = WaterMark(password_img=1, password_wm=1)
-    bwm.read_img('test.png')
-    bwm.read_wm(padded_id, mode='str')
+    # 2. Embed
+    processed_bytes = _ensure_3_channels(orig_bytes)
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_in, \
+         tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_out:
+        tmp_in.write(processed_bytes)
+        tmp_in.flush()
+        
+        bwm = WaterMark(password_img=1, password_wm=1)
+        bwm.read_img(tmp_in.name)
+        bwm.read_wm(_pad_id('9iP'), mode='str')
+        bwm.embed(tmp_out.name)
+        
+        with open(tmp_out.name, "rb") as f:
+            embedded_bytes = f.read()
+            
+    # 3. Simulate S3 / CloudFront doing JPEG compression, or user saving as JPG
+    # We will read the PNG bytes, and write it out as a JPEG file with 95% quality.
+    img_bgr = cv2.imdecode(np.frombuffer(embedded_bytes, np.uint8), cv2.IMREAD_COLOR)
+    success, jpg_bytes = cv2.imencode('.jpg', img_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
     
-    len_wm = len(bwm.wm_bit)
-    print("Actual embedded len_wm:", len_wm)
+    # 4. Simulate user uploading the JPG to Admin
+    processed_jpg_bytes = _ensure_3_channels(jpg_bytes.tobytes())
     
-    bwm.embed('test_wm.png')
-
-    bwm2 = WaterMark(password_img=1, password_wm=1)
-    
-    wm_shape_exact = (WM_SHAPE_LENGTH * 8) - 1
-    print("Trying to extract with wm_shape:", wm_shape_exact)
-    
-    try:
-        extracted = bwm2.extract('test_wm.png', wm_shape=wm_shape_exact, mode='str')
-        print("Extracted raw:", extracted)
-        print("Extracted clean:", _unpad_id(extracted))
-    except Exception as e:
-        print("Error during extraction:", e)
+    # 5. Extract
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_ext:
+        tmp_ext.write(processed_jpg_bytes)
+        tmp_ext.flush()
+        
+        bwm2 = WaterMark(password_img=1, password_wm=1)
+        try:
+            extracted = bwm2.extract(tmp_ext.name, wm_shape=511, mode='str')
+            print("Extracted clean from JPG:", _unpad_id(extracted))
+        except Exception as e:
+            print("Extraction failed:", e)
 
 test()

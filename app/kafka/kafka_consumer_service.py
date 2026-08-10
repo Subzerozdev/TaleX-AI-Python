@@ -260,7 +260,9 @@ async def _process_pipeline_job(data: dict):
                 file_bytes = await asyncio.to_thread(embed_video_audio_watermark, file_bytes, job.creator_id)
             
             # Ghi đè file có watermark lên S3
-            content_type = "image/jpeg" if job.media_type == "IMAGE" else "video/mp4"
+            # QUAN TRỌNG: Phải luôn lưu là image/png vì thuật toán DWT-DCT-SVD với mode='str' cực kỳ dễ bị 
+            # phá hủy (ra ký tự rác) nếu bị nén lossy bởi định dạng JPEG.
+            content_type = "image/png" if job.media_type == "IMAGE" else "video/mp4"
             await asyncio.to_thread(
                 upload_to_s3, job.s3_key, file_bytes, content_type=content_type, bucket=job.s3_bucket
             )
