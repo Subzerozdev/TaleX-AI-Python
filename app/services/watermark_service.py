@@ -313,9 +313,3 @@ def extract_video_audio_watermark(video_bytes: bytes) -> str:
             logger.error(f"Lỗi FFmpeg khi trích xuất audio: {e}")
             raise RuntimeError("Lỗi khi tách âm thanh từ video")
         except Exception as e:
-            logger.error(f"Lỗi khi giải mã audio watermark: {e}")
-            raise e
-        finally:
-            os.remove(tmp_video_in.name)
-            if os.path.exists(tmp_audio_out.name):
-                os.remove(tmp_audio_out.name)
