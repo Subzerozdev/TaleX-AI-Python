@@ -191,6 +191,8 @@ def embed_video_audio_watermark(video_bytes: bytes, creator_id: str) -> bytes:
             with open(tmp_video_out.name, "rb") as f:
                 out_bytes = f.read()
                 
+        except FileNotFoundError:
+            raise ValueError("Lỗi: Không tìm thấy phần mềm FFmpeg trên máy chủ. Vui lòng cài đặt FFmpeg và thêm vào biến môi trường PATH.")
         except Exception as e:
             logger.error(f"Lỗi khi nhúng audio watermark cho video: {e}")
             raise e
@@ -303,6 +305,10 @@ def extract_video_audio_watermark(video_bytes: bytes) -> str:
             
             return clean_id
             
+            
+        except FileNotFoundError:
+            logger.error("Lỗi: Không tìm thấy FFmpeg trên máy chủ.")
+            raise ValueError("Lỗi: Không tìm thấy phần mềm FFmpeg trên máy chủ. Vui lòng cài đặt FFmpeg và thêm vào biến môi trường PATH.")
         except subprocess.CalledProcessError as e:
             logger.error(f"Lỗi FFmpeg khi trích xuất audio: {e}")
             raise RuntimeError("Lỗi khi tách âm thanh từ video")

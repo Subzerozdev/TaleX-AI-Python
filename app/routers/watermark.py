@@ -64,6 +64,8 @@ async def extract_watermark_api(
         else:
             raise HTTPException(status_code=400, detail="Invalid media_type. Must be IMAGE or VIDEO")
             
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         logger.error(f"Error in extract_watermark_api: {e}")
         raise HTTPException(status_code=500, detail=str(e))
