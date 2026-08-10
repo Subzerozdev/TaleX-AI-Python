@@ -62,7 +62,8 @@ def extract_image_watermark(image_bytes: bytes) -> str:
                 password_img=settings.WATERMARK_PASSWORD_IMG, 
                 password_wm=settings.WATERMARK_PASSWORD_WM
             )
-            extracted = bwm.extract(tmp_in.name, wm_shape=WM_SHAPE_LENGTH, mode='str')
+            # wm_shape requires the number of bits. Since we pad to WM_SHAPE_LENGTH bytes, it's WM_SHAPE_LENGTH * 8 bits
+            extracted = bwm.extract(tmp_in.name, wm_shape=WM_SHAPE_LENGTH * 8, mode='str')
             return _unpad_id(extracted)
         except Exception as e:
             logger.error(f"Lỗi khi trích xuất blind watermark ảnh: {e}")
