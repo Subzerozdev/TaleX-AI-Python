@@ -271,7 +271,8 @@ async def _process_pipeline_job(data: dict):
                 new_s3_key = f"{base_key}_wm.png"
                 content_type = "image/png"
             else:
-                new_s3_key = original_s3_key
+                base_key = original_s3_key.rsplit('.', 1)[0]
+                new_s3_key = f"{base_key}_wm.mp4"
                 content_type = "video/mp4"
                 
             await asyncio.to_thread(
@@ -334,7 +335,7 @@ async def _process_pipeline_job(data: dict):
             "success": True,
             "errorMessage": None,
             "previewS3Key": preview_s3_key,
-            "watermarkedS3Key": new_s3_key if job.media_type == "IMAGE" else None,
+            "watermarkedS3Key": new_s3_key if 'new_s3_key' in locals() else None,
         }
         await send_copyright_result(job.media_id, result)
 
