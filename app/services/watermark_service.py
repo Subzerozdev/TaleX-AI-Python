@@ -15,10 +15,13 @@ WM_SHAPE_LENGTH = 64
 
 def _pad_id(creator_id: str) -> str:
     """Đệm chuỗi cho đủ chiều dài cố định để thuật toán extract hoạt động đúng."""
+    # Thêm thông tin website vào mã ID
+    payload = f"ID: {creator_id} - Website: talex.pro.vn"
     # Chỉ lấy 64 ký tự đầu nếu dài hơn, đệm space nếu ngắn hơn
-    return creator_id.ljust(WM_SHAPE_LENGTH)[:WM_SHAPE_LENGTH]
+    return payload.ljust(WM_SHAPE_LENGTH)[:WM_SHAPE_LENGTH]
 
 def _unpad_id(padded_id: str) -> str:
+    # Dọn dẹp khoảng trắng dư thừa
     return padded_id.strip()
 
 def embed_image_watermark(image_bytes: bytes, creator_id: str) -> bytes:
