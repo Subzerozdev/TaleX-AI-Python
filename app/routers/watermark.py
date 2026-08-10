@@ -3,7 +3,8 @@ from fastapi.responses import Response
 from app.services.watermark_service import (
     embed_image_watermark,
     extract_image_watermark,
-    embed_video_audio_watermark
+    embed_video_audio_watermark,
+    extract_video_audio_watermark
 )
 from loguru import logger
 
@@ -56,13 +57,10 @@ async def extract_watermark_api(
             return {"creator_id": creator_id}
             
         elif media_type == "VIDEO":
-            # Đối với Video, việc extract audio watermark (sóng siêu âm) cần công cụ 
-            # soi phổ Spectrogram chuyên dụng (như Adobe Audition hoặc thư viện librosa).
-            # Tạm thời API này sẽ trả về thông báo hướng dẫn.
-            return {
-                "message": "Để trích xuất ID từ Video, vui lòng tải video vào phần mềm phân tích phổ âm thanh (Spectrogram) như Adobe Audition hoặc Audacity để xem mã nhị phân ở tần số 18kHz."
-            }
+            creator_id = extract_video_audio_watermark(file_bytes)
+            return {"creator_id": f"ID: {creator_id} - Website: talex.pro.vn"}
             
+
         else:
             raise HTTPException(status_code=400, detail="Invalid media_type. Must be IMAGE or VIDEO")
             

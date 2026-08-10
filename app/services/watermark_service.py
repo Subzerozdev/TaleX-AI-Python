@@ -200,3 +200,116 @@ def embed_video_audio_watermark(video_bytes: bytes, creator_id: str) -> bytes:
             os.remove(tmp_video_out.name)
             
     return out_bytes
+
+def _binary_to_string(binary_str: str) -> str:
+    """Chuyển chuỗi bit sang string (ví dụ '01000001' -> 'A')."""
+    chars = []
+    for i in range(0, len(binary_str), 8):
+        byte = binary_str[i:i+8]
+        if len(byte) == 8:
+            chars.append(chr(int(byte, 2)))
+    return ''.join(chars)
+
+def extract_video_audio_watermark(video_bytes: bytes) -> str:
+    """
+    Trích xuất ID từ âm thanh siêu âm 18kHz của Video bằng FFT.
+    """
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_video_in, \
+         tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_audio_out:
+             
+        tmp_video_in.write(video_bytes)
+        tmp_video_in.flush()
+        
+        try:
+            # 1. Dùng FFmpeg để tách audio ra thành file WAV mono 44.1kHz
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i", tmp_video_in.name,
+                "-vn",            # No video
+                "-ac", "1",       # Mono
+                "-ar", "44100",   # Sample rate 44.1kHz
+                "-acodec", "pcm_s16le", # 16-bit PCM
+                "-loglevel", "error",
+                tmp_audio_out.name
+            ]
+            subprocess.run(cmd, capture_output=True, timeout=60, check=True)
+            
+            # 2. Đọc file âm thanh
+            sample_rate, audio_data = wavfile.read(tmp_audio_out.name)
+            
+            if len(audio_data) == 0:
+                raise ValueError("Không tìm thấy luồng âm thanh trong video")
+                
+            # Đảm bảo audio_data là mảng 1D
+            if len(audio_data.shape) > 1:
+                audio_data = audio_data.mean(axis=1)
+                
+            # 3. Phân tích OOK ở 18kHz (từng chunk 0.1s)
+            bit_duration = 0.1
+            chunk_size = int(sample_rate * bit_duration)
+            freq_target = 18000.0
+            
+            num_chunks = len(audio_data) // chunk_size
+            powers = []
+            
+            for i in range(num_chunks):
+                chunk = audio_data[i*chunk_size : (i+1)*chunk_size]
+                # Thực hiện Fast Fourier Transform
+                fft_result = np.fft.rfft(chunk)
+                freqs = np.fft.rfftfreq(chunk_size, 1.0/sample_rate)
+                
+                # Tìm index của tần số gần 18000Hz nhất
+                idx_18k = np.argmin(np.abs(freqs - freq_target))
+                
+                # Tính năng lượng quanh dải 18kHz (cộng dồn vài bin xung quanh để bù trừ nhiễu)
+                power = np.sum(np.abs(fft_result[max(0, idx_18k-2) : min(len(fft_result), idx_18k+3)])**2)
+                powers.append(power)
+                
+            if not powers:
+                raise ValueError("Video quá ngắn để phân tích")
+                
+            # 4. Xác định ngưỡng (threshold) để phân biệt bit 1 và bit 0
+            # Dùng median của top 10% năng lượng làm tín hiệu '1', phần còn lại là '0'
+            sorted_powers = np.sort(powers)
+            top_10_percent = sorted_powers[int(len(sorted_powers)*0.9):]
+            if len(top_10_percent) == 0:
+                threshold = np.mean(powers) * 1.5
+            else:
+                threshold = np.median(top_10_percent) * 0.3 # 30% của peak
+            
+            binary_sequence = ""
+            for p in powers:
+                if p > threshold:
+                    binary_sequence += "1"
+                else:
+                    binary_sequence += "0"
+                    
+            # 5. Tìm chuỗi header '10101010' để đồng bộ (sync)
+            header = "10101010"
+            header_idx = binary_sequence.find(header)
+            
+            if header_idx == -1:
+                raise ValueError("Không tìm thấy tín hiệu watermark trong video (Không thấy header)")
+                
+            # Trích xuất dữ liệu sau header
+            data_bits = binary_sequence[header_idx + len(header):]
+            
+            # 6. Dịch ngược thành string
+            creator_id_extracted = _binary_to_string(data_bits)
+            
+            # Lọc bỏ các ký tự rác (chỉ lấy ASCII in được)
+            clean_id = ''.join(c for c in creator_id_extracted if 32 <= ord(c) <= 126)
+            
+            return clean_id
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Lỗi FFmpeg khi trích xuất audio: {e}")
+            raise RuntimeError("Lỗi khi tách âm thanh từ video")
+        except Exception as e:
+            logger.error(f"Lỗi khi giải mã audio watermark: {e}")
+            raise e
+        finally:
+            os.remove(tmp_video_in.name)
+            if os.path.exists(tmp_audio_out.name):
+                os.remove(tmp_audio_out.name)
