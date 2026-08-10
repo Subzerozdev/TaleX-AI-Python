@@ -119,7 +119,7 @@ async def consume_loop():
 # đợi kiểm duyệt/bản quyền — đổi lại mem_limit của container đã tăng lên 4g (xem
 # docker-compose.yml) để chịu được worst-case ~8 video chạy cùng lúc (~4GB).
 _VIDEO_JOB_SEMAPHORE = asyncio.Semaphore(8)
-_IMAGE_JOB_SEMAPHORE = asyncio.Semaphore(8)
+_IMAGE_JOB_SEMAPHORE = asyncio.Semaphore(4)
 
 # Debounce cho _process_debezium_series: đã ghi nhận thực tế 1 series bị CDC gửi lại
 # event upsert liên tục nhiều lần/phút (nguyên nhân sâu xa nằm ở tầng Debezium/Kafka
@@ -141,7 +141,7 @@ _last_series_upsert_at: dict[str, float] = {}
 # cho tới 120s, xem extractor.py) + hash + insert/search Milvus cho từng đó frame có thể mất
 # hơn 60s một cách HỢP LỆ, không phải bị treo. Dùng chung 1 timeout cho ảnh lẫn video sẽ báo
 # lỗi oan cho video hợp lệ (job "timeout" trong khi ffmpeg bên dưới vẫn đang chạy đúng).
-_JOB_PROCESSING_TIMEOUT_SECONDS = 60
+_JOB_PROCESSING_TIMEOUT_SECONDS = 300
 _VIDEO_JOB_PROCESSING_TIMEOUT_SECONDS = 600
 
 
