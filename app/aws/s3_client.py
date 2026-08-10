@@ -62,5 +62,12 @@ def upload_to_s3(s3_key: str, file_bytes: bytes, content_type: str = "applicatio
     if client is None:
         raise RuntimeError("S3 client not configured — check AWS credentials")
     logger.info(f"S3 upload: bucket={bucket}, key={s3_key}, size={len(file_bytes)} bytes")
-    client.put_object(Bucket=bucket, Key=s3_key, Body=file_bytes, ContentType=content_type)
+    # Thêm CacheControl='no-transform' để ngăn Cloudflare Polish hoặc CDN nén lại ảnh (làm hỏng watermark)
+    client.put_object(
+        Bucket=bucket, 
+        Key=s3_key, 
+        Body=file_bytes, 
+        ContentType=content_type,
+        CacheControl="no-transform"
+    )
     logger.info(f"S3 upload complete: {s3_key}")
