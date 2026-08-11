@@ -257,34 +257,38 @@ async def _process_pipeline_job(data: dict):
             process_fingerprint, job.media_id, job.creator_id, file_bytes, filename
         )
 
-        # 2. Nhúng watermark (IMAGE: blind_watermark, VIDEO: audio_watermark)
+        # 2. Nhúng watermark (IMAGE: blind_watermark, VIDEO: A/B HLS)
         try:
             watermarked_bytes = file_bytes
-            if job.media_type == "IMAGE":
-                watermarked_bytes = await asyncio.to_thread(embed_image_watermark, file_bytes, job.creator_id)
-            elif job.media_type == "VIDEO":
-                watermarked_bytes = await asyncio.to_thread(embed_video_audio_watermark, file_bytes, job.creator_id)
-            
-            # Ghi đè file có watermark lên S3
-            # QUAN TRỌNG: Phải luôn lưu là image/png vì thuật toán DWT-DCT-SVD với mode='str' cực kỳ dễ bị 
-            # phá hủy (ra ký tự rác) nếu bị nén lossy bởi định dạng JPEG.
             original_s3_key = job.s3_key
             if job.media_type == "IMAGE":
+                watermarked_bytes = await asyncio.to_thread(embed_image_watermark, file_bytes, job.creator_id)
                 base_key = original_s3_key.rsplit('.', 1)[0]
                 new_s3_key = f"{base_key}_wm.png"
-                content_type = "image/png"
-            else:
-                base_key = original_s3_key.rsplit('.', 1)[0]
-                new_s3_key = f"{base_key}_wm.mp4"
-                content_type = "video/mp4"
+                await asyncio.to_thread(
+                    upload_to_s3, new_s3_key, watermarked_bytes, content_type="image/png", bucket=job.s3_bucket
+                )
+            elif job.media_type == "VIDEO":
+                from app.services.watermark_service import embed_ab_watermark_hls
+                from app.aws.s3_client import upload_dir_to_s3
+                import tempfile
+                import shutil
                 
-            await asyncio.to_thread(
-                upload_to_s3, new_s3_key, watermarked_bytes, content_type=content_type, bucket=job.s3_bucket
-            )
+                # Tạo thư mục chứa HLS tạm
+                tmp_hls_dir = tempfile.mkdtemp()
+                try:
+                    await asyncio.to_thread(embed_ab_watermark_hls, file_bytes, tmp_hls_dir)
+                    # S3 Prefix: "videos/ab_hls/{mediaId}"
+                    new_s3_key = f"videos/ab_hls/{job.media_id}"
+                    await asyncio.to_thread(upload_dir_to_s3, tmp_hls_dir, new_s3_key, bucket=job.s3_bucket)
+                finally:
+                    shutil.rmtree(tmp_hls_dir, ignore_errors=True)
+            
             logger.info(f"Watermark embedded and uploaded for {job.media_id}")
         except Exception as we:
             logger.error(f"Failed to embed watermark for {job.media_id}: {we}")
             # Nếu nhúng watermark thất bại, ta bỏ qua file watermark (không có new_s3_key)
+
 
         # 3. Generate Preview (Từ file gốc để ảnh thu nhỏ nét nhất, không bị nhiễu)
         preview_s3_key = None

@@ -4,7 +4,7 @@ from app.services.watermark_service import (
     embed_image_watermark,
     extract_image_watermark,
     embed_video_audio_watermark,
-    extract_video_audio_watermark
+    extract_ab_watermark_hls
 )
 from loguru import logger
 
@@ -58,9 +58,9 @@ async def extract_watermark_api(
             return extracted_ids
             
         elif media_type == "VIDEO":
-            extracted_ids = extract_video_audio_watermark(file_bytes)
+            extracted_ids = extract_ab_watermark_hls(file_bytes)
             return {
-                "creator_id": f"ID: {extracted_ids['creator_id']} - Website: talex.pro.vn" if extracted_ids.get('creator_id') else None,
+                "creator_id": extracted_ids.get('creator_id'),
                 "viewer_id": extracted_ids.get('viewer_id')
             }
             

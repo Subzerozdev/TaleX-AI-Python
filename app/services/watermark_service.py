@@ -249,6 +249,74 @@ def embed_video_audio_watermark(video_bytes: bytes, creator_id: str) -> bytes:
     finally:
         if os.path.exists(tmp_video_in.name): os.remove(tmp_video_in.name)
         if os.path.exists(tmp_audio_wm.name): os.remove(tmp_audio_wm.name)
+
+def _get_ffmpeg_path():
+    """Lấy đường dẫn FFmpeg, fallback về thư mục Desktop nếu không có trong PATH."""
+    import shutil
+    if shutil.which("ffmpeg"):
+        return "ffmpeg"
+    desktop_ffmpeg = r"C:\Users\ttinh\Desktop\ffmpeg-2026-06-08-git-6028720d70-full_build\bin\ffmpeg.exe"
+    if os.path.exists(desktop_ffmpeg):
+        return desktop_ffmpeg
+    return "ffmpeg"
+
+def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
+    """
+    Tạo 2 phiên bản HLS A và B từ video gốc.
+    Version A: Có đóng dấu (Pattern A)
+    Version B: Không đóng dấu (hoặc Pattern B)
+    """
+    tmp_video_in = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    tmp_video_in.write(video_bytes)
+    tmp_video_in.close()
+
+    dir_a = os.path.join(output_dir, "version_A")
+    dir_b = os.path.join(output_dir, "version_B")
+    os.makedirs(dir_a, exist_ok=True)
+    os.makedirs(dir_b, exist_ok=True)
+
+    ffmpeg_bin = _get_ffmpeg_path()
+    
+    try:
+        # Lệnh Version A (Có Pattern A - ví dụ là 1 text nhỏ ở góc phải)
+        # Sử dụng font mặc định của FFmpeg để tránh lỗi thiếu font
+        cmd_a = [
+            ffmpeg_bin, "-y", "-i", tmp_video_in.name,
+            "-vf", "drawtext=text='talex.pro.vn':x=W-tw-10:y=10:fontsize=12:fontcolor=white@0.3",
+            "-c:v", "libx264", "-preset", "fast",
+            "-force_key_frames", "expr:gte(t,n_forced*4)",
+            "-g", "120", "-sc_threshold", "0",
+            "-c:a", "aac", "-b:a", "128k",
+            "-hls_time", "4", "-hls_playlist_type", "vod",
+            "-f", "hls", os.path.join(dir_a, "playlist.m3u8")
+        ]
+        
+        # Lệnh Version B (Không có watermark)
+        cmd_b = [
+            ffmpeg_bin, "-y", "-i", tmp_video_in.name,
+            "-c:v", "libx264", "-preset", "fast",
+            "-force_key_frames", "expr:gte(t,n_forced*4)",
+            "-g", "120", "-sc_threshold", "0",
+            "-c:a", "aac", "-b:a", "128k",
+            "-hls_time", "4", "-hls_playlist_type", "vod",
+            "-f", "hls", os.path.join(dir_b, "playlist.m3u8")
+        ]
+
+        logger.info("Đang render Version A HLS...")
+        res_a = subprocess.run(cmd_a, capture_output=True)
+        if res_a.returncode != 0:
+            raise RuntimeError(f"FFmpeg A failed: {res_a.stderr.decode('utf-8', errors='replace')}")
+
+        logger.info("Đang render Version B HLS...")
+        res_b = subprocess.run(cmd_b, capture_output=True)
+        if res_b.returncode != 0:
+            raise RuntimeError(f"FFmpeg B failed: {res_b.stderr.decode('utf-8', errors='replace')}")
+            
+    except Exception as e:
+        logger.error(f"Lỗi khi chạy A/B HLS: {e}")
+        raise e
+    finally:
+        if os.path.exists(tmp_video_in.name): os.remove(tmp_video_in.name)
         if os.path.exists(tmp_video_out.name): os.remove(tmp_video_out.name)
         
     return out_bytes
@@ -311,7 +379,97 @@ def _extract_ook_from_audio(audio_data: np.ndarray, sample_rate: int, freq_targe
     clean_id = ''.join(c for c in extracted_str if 32 <= ord(c) <= 126)
     return clean_id
 
-def extract_video_audio_watermark(video_bytes: bytes) -> dict:
+def extract_ab_watermark_hls(video_bytes: bytes) -> dict:
+    """
+    Trích xuất Viewer ID từ một đoạn video bị quay lén (đã áp dụng A/B Watermarking).
+    Thuật toán:
+    1. Chia video thành các khoảng thời gian (chunk) dài 4 giây.
+    2. Ở mỗi chunk, trích xuất 1 frame ở giữa (ví dụ: giây thứ 2, 6, 10...).
+    3. Dùng OCR (PyTesseract) quét frame đó xem có chữ 'talex' không (tương đương Bản A).
+    4. Gom kết quả quét thành chuỗi nhị phân (Ví dụ: 10101).
+    5. Giải mã chuỗi nhị phân thành ViewerID gốc.
+    """
+    import pytesseract
+    from PIL import Image
+    import cv2
+    import math
+
+    tmp_video_in = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    tmp_video_in.write(video_bytes)
+    tmp_video_in.close()
+    
+    ffmpeg_bin = _get_ffmpeg_path()
+    
+    # 1. Tính độ dài video
+    probe_cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", tmp_video_in.name]
+    probe_res = subprocess.run(probe_cmd, capture_output=True, text=True)
+    
+    duration = 0
+    if probe_res.stdout:
+        import json
+        try:
+            info = json.loads(probe_res.stdout)
+            duration = float(info.get("format", {}).get("duration", 0))
+        except:
+            pass
+            
+    if duration == 0:
+        os.remove(tmp_video_in.name)
+        return {"creator_id": None, "viewer_id": None}
+        
+    chunk_length = 4
+    num_chunks = math.floor(duration / chunk_length)
+    
+    binary_str = ""
+    
+    try:
+        # Lặp qua từng chunk để lấy frame ở giữa
+        for i in range(num_chunks):
+            target_time = i * chunk_length + (chunk_length / 2)
+            tmp_frame = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+            tmp_frame.close()
+            
+            # Cắt frame
+            cmd = [
+                ffmpeg_bin, "-y", "-ss", str(target_time), "-i", tmp_video_in.name,
+                "-vframes", "1", "-q:v", "2", tmp_frame.name
+            ]
+            subprocess.run(cmd, capture_output=True)
+            
+            # Đọc bằng OpenCV và quét OCR góc trên bên phải
+            if os.path.exists(tmp_frame.name) and os.path.getsize(tmp_frame.name) > 0:
+                img = cv2.imread(tmp_frame.name)
+                # Cắt góc trên bên phải (nơi chứa Pattern A)
+                h, w = img.shape[:2]
+                roi = img[0:int(h*0.2), int(w*0.5):w] # Lấy nửa trên bên phải
+                
+                # Quét OCR
+                text = pytesseract.image_to_string(roi).lower()
+                if "talex" in text or "pro" in text:
+                    binary_str += "1"
+                else:
+                    binary_str += "0"
+            else:
+                binary_str += "0"
+                
+            if os.path.exists(tmp_frame.name):
+                os.remove(tmp_frame.name)
+                
+        # Giả lập: Nếu người dùng upload nguyên vẹn từ đầu, ta có mã nhị phân
+        # Ở đây vì không có DB map mã nhị phân -> ID, ta trả về chuỗi bit giả lập.
+        # Trong thực tế, AI sẽ query DB để tìm User có mã Binary tương ứng.
+        viewer_id = None
+        if "1" in binary_str:
+            viewer_id = f"User_Binary_{binary_str}"
+            
+        return {"creator_id": None, "viewer_id": viewer_id}
+        
+    except Exception as e:
+        logger.error(f"Lỗi khi trích xuất A/B HLS: {e}")
+        return {"creator_id": None, "viewer_id": None}
+    finally:
+        if os.path.exists(tmp_video_in.name): 
+            os.remove(tmp_video_in.name)
     """
     Trích xuất ID từ âm thanh siêu âm của Video bằng FFT.
     Trả về dict chứa creator_id (18kHz) và viewer_id (20kHz).

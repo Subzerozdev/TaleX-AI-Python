@@ -71,3 +71,34 @@ def upload_to_s3(s3_key: str, file_bytes: bytes, content_type: str = "applicatio
         CacheControl="no-transform"
     )
     logger.info(f"S3 upload complete: {s3_key}")
+
+import os
+def upload_dir_to_s3(local_dir: str, s3_prefix: str, bucket: str = None) -> None:
+    """Upload toàn bộ thư mục (VD: HLS) lên S3."""
+    bucket = bucket or settings.AWS_S3_BUCKET
+    client = get_s3_client()
+    if client is None:
+        raise RuntimeError("S3 client not configured — check AWS credentials")
+        
+    for root, _, files in os.walk(local_dir):
+        for file in files:
+            local_path = os.path.join(root, file)
+            # Tính toán key trên S3
+            rel_path = os.path.relpath(local_path, local_dir)
+            s3_key = f"{s3_prefix}/{rel_path}".replace("\\", "/")
+            
+            content_type = "application/octet-stream"
+            if file.endswith(".m3u8"):
+                content_type = "application/vnd.apple.mpegurl"
+            elif file.endswith(".ts"):
+                content_type = "video/MP2T"
+                
+            with open(local_path, "rb") as f:
+                client.put_object(
+                    Bucket=bucket,
+                    Key=s3_key,
+                    Body=f.read(),
+                    ContentType=content_type,
+                    CacheControl="no-transform"
+                )
+    logger.info(f"S3 upload directory complete: {s3_prefix}")
