@@ -123,9 +123,9 @@ def _generate_ultrasound_wav(creator_id: str, output_wav_path: str):
     Sinh ra file âm thanh WAV chứa sóng siêu âm mã hóa creator_id.
     Kỹ thuật: On-Off Keying (OOK) ở tần số 18kHz.
     """
-    freq = 18000.0  # 18kHz (gần như ngoài ngưỡng nghe của người lớn)
+    freq = 18000.0  # 18kHz
     sample_rate = 44100
-    bit_duration = 0.1  # 10 bits per second (mỗi bit kéo dài 0.1s)
+    bit_duration = 0.02  # 50 bits per second (nhanh gấp 5 lần so với cũ)
     
     # Thêm header '10101010' để dễ nhận diện lúc decode
     binary_str = "10101010" + _string_to_binary(creator_id)
@@ -279,8 +279,8 @@ def extract_video_audio_watermark(video_bytes: bytes) -> str:
         if len(audio_data.shape) > 1:
             audio_data = audio_data.mean(axis=1)
             
-        # 3. Phân tích OOK ở 18kHz (từng chunk 0.1s)
-        bit_duration = 0.1
+        # 3. Phân tích OOK ở 18kHz (từng chunk 0.02s)
+        bit_duration = 0.02
         chunk_size = int(sample_rate * bit_duration)
         freq_target = 18000.0
         
