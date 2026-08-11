@@ -119,7 +119,7 @@ async def consume_loop():
 # đợi kiểm duyệt/bản quyền — đổi lại mem_limit của container đã tăng lên 4g (xem
 # docker-compose.yml) để chịu được worst-case ~8 video chạy cùng lúc (~4GB).
 _VIDEO_JOB_SEMAPHORE = asyncio.Semaphore(8)
-_IMAGE_JOB_SEMAPHORE = asyncio.Semaphore(4)
+_IMAGE_JOB_SEMAPHORE = asyncio.Semaphore(8)
 
 # Debounce cho _process_debezium_series: đã ghi nhận thực tế 1 series bị CDC gửi lại
 # event upsert liên tục nhiều lần/phút (nguyên nhân sâu xa nằm ở tầng Debezium/Kafka
