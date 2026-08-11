@@ -18,8 +18,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Cài FFmpeg (cần cho Content ID — trích xuất frames từ video)
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+# Cài FFmpeg và Tesseract OCR (cần cho Content ID — trích xuất watermark từ video)
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy thư viện đã cài từ stage 1
