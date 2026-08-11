@@ -252,21 +252,24 @@ async def _process_pipeline_job(data: dict):
         file_bytes = await asyncio.to_thread(download_from_s3, job.s3_key, job.s3_bucket, MAX_FILE_SIZE)
         filename = job.s3_key.rsplit("/", 1)[-1] if "/" in job.s3_key else job.s3_key
 
-        # Nhúng watermark (IMAGE: blind_watermark, VIDEO: audio_watermark)
+        # 1. Run fingerprint pipeline TRÊN FILE GỐC (Trước khi bị nhiễu bởi Watermark)
+        response = await asyncio.to_thread(
+            process_fingerprint, job.media_id, job.creator_id, file_bytes, filename
+        )
+
+        # 2. Nhúng watermark (IMAGE: blind_watermark, VIDEO: audio_watermark)
         try:
+            watermarked_bytes = file_bytes
             if job.media_type == "IMAGE":
-                file_bytes = await asyncio.to_thread(embed_image_watermark, file_bytes, job.creator_id)
+                watermarked_bytes = await asyncio.to_thread(embed_image_watermark, file_bytes, job.creator_id)
             elif job.media_type == "VIDEO":
-                file_bytes = await asyncio.to_thread(embed_video_audio_watermark, file_bytes, job.creator_id)
+                watermarked_bytes = await asyncio.to_thread(embed_video_audio_watermark, file_bytes, job.creator_id)
             
             # Ghi đè file có watermark lên S3
             # QUAN TRỌNG: Phải luôn lưu là image/png vì thuật toán DWT-DCT-SVD với mode='str' cực kỳ dễ bị 
             # phá hủy (ra ký tự rác) nếu bị nén lossy bởi định dạng JPEG.
             original_s3_key = job.s3_key
             if job.media_type == "IMAGE":
-                # Tạo một S3 key hoàn toàn MỚI (đổi đuôi thành _wm.png) để tránh việc
-                # CloudFront/Cloudflare đã cache file gốc không có watermark ở URL cũ.
-                # Cách này đảm bảo user LUÔN tải được file mới tinh (cache miss).
                 base_key = original_s3_key.rsplit('.', 1)[0]
                 new_s3_key = f"{base_key}_wm.png"
                 content_type = "image/png"
@@ -276,18 +279,14 @@ async def _process_pipeline_job(data: dict):
                 content_type = "video/mp4"
                 
             await asyncio.to_thread(
-                upload_to_s3, new_s3_key, file_bytes, content_type=content_type, bucket=job.s3_bucket
+                upload_to_s3, new_s3_key, watermarked_bytes, content_type=content_type, bucket=job.s3_bucket
             )
             logger.info(f"Watermark embedded and uploaded for {job.media_id}")
         except Exception as we:
             logger.error(f"Failed to embed watermark for {job.media_id}: {we}")
-            # Nếu nhúng watermark thất bại, ta vẫn cho luồng chạy tiếp với file gốc để 
-            # ít nhất vẫn kiểm duyệt và tìm bản quyền được.
+            # Nếu nhúng watermark thất bại, ta bỏ qua file watermark (không có new_s3_key)
 
-        # Generate Preview — bọc asyncio.to_thread giống download_from_s3 ở trên. Trước đây
-        # gọi trực tiếp (đồng bộ): blur ảnh (CPU) và đặc biệt ffmpeg cắt video preview có
-        # thể chạy vài giây, chặn đứng TOÀN BỘ event loop trong lúc đó — không chỉ job này,
-        # mà cả 7 job khác đang chạy song song trong cùng semaphore, lẫn heartbeat Kafka.
+        # 3. Generate Preview (Từ file gốc để ảnh thu nhỏ nét nhất, không bị nhiễu)
         preview_s3_key = None
         try:
             if job.media_type == "IMAGE":
@@ -305,11 +304,6 @@ async def _process_pipeline_job(data: dict):
         except Exception as pe:
             logger.error(f"Failed to generate preview for {job.media_id}: {pe}")
             # We don't fail the entire job if preview fails
-
-        # Run fingerprint pipeline
-        response = await asyncio.to_thread(
-            process_fingerprint, job.media_id, job.creator_id, file_bytes, filename
-        )
 
         # Build camelCase result for Spring Boot
         result = {
