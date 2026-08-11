@@ -49,4 +49,5 @@ dnspython>=2.0.0
 
 # Watermark
 blind-watermark>=0.4.0
-scipy>=1.13.0pytesseract>=0.3.10
+scipy>=1.13.0
+pytesseract>=0.3.10
