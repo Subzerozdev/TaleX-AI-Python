@@ -278,11 +278,17 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
     ffmpeg_bin = _get_ffmpeg_path()
     
     try:
+        import platform
+        font_param = ""
+        if platform.system() == "Windows":
+            font_path = "C\\\\:/Windows/Fonts/arial.ttf"
+            font_param = f"fontfile={font_path}:"
+
         # Lệnh Version A (Có Pattern A - ví dụ là 1 text nhỏ ở góc phải)
-        # Sử dụng font mặc định của FFmpeg để tránh lỗi thiếu font
+        # Sử dụng font mặc định của FFmpeg hoặc arial trên Windows để tránh lỗi thiếu font
         cmd_a = [
             ffmpeg_bin, "-y", "-i", tmp_video_in.name,
-            "-vf", "drawtext=text='talex.pro.vn':x=W-tw-10:y=10:fontsize=12:fontcolor=white@0.3",
+            "-vf", f"drawtext={font_param}text='talex.pro.vn':x=W-tw-10:y=10:fontsize=24:fontcolor=white@0.8",
             "-c:v", "libx264", "-preset", "fast",
             "-force_key_frames", "expr:gte(t,n_forced*4)",
             "-g", "120", "-sc_threshold", "0",
@@ -389,6 +395,10 @@ def extract_ab_watermark_hls(video_bytes: bytes) -> dict:
     4. Giải mã chuỗi nhị phân thành ViewerID gốc.
     """
     import pytesseract
+    import platform
+    if platform.system() == "Windows":
+        pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    
     from PIL import Image
     import cv2
     import math
