@@ -433,14 +433,23 @@ def extract_ab_watermark_hls(video_bytes: bytes) -> dict:
             # Pattern nằm ở góc trên bên phải, ta cắt 15% chiều cao và 30% chiều rộng từ mép phải
             roi = img[0:int(h*0.15), int(w*0.7):w] 
             
+            # Phóng to ảnh 3 lần để Tesseract dễ đọc chữ nhỏ (fontsize=12)
+            roi = cv2.resize(roi, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+            
             # Tiền xử lý để tăng khả năng nhận diện chữ trắng
             # Chuyển sang ảnh xám
             gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-            # Tăng độ tương phản (Threshold)
-            _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
             
-            # Quét OCR
-            text = pytesseract.image_to_string(thresh).lower()
+            # Lọc nhiễu và làm nét
+            blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+            gray = cv2.addWeighted(gray, 1.5, blurred, -0.5, 0)
+            
+            # Threshold động hoặc thấp (vì opacity=0.3 làm chữ có màu xám tối)
+            _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
+            
+            # Quét OCR với custom config
+            custom_config = r'--oem 3 --psm 6'
+            text = pytesseract.image_to_string(thresh, config=custom_config).lower()
             if "talex" in text or "pro" in text or "vn" in text:
                 binary_str += "1"
             else:
@@ -451,8 +460,15 @@ def extract_ab_watermark_hls(video_bytes: bytes) -> dict:
         if "1" in binary_str:
             viewer_id = f"User_Binary_{binary_str}"
             
-        return {"creator_id": None, "viewer_id": viewer_id}
-        
+        # Lấy thêm Creator ID từ Audio Watermark (sóng siêu âm)
+        creator_id = None
+        try:
+            audio_extracted = extract_video_audio_watermark(video_bytes)
+            creator_id = audio_extracted.get("creator_id")
+        except Exception as e:
+            logger.warning(f"Không thể trích xuất audio watermark: {e}")
+            
+        return {"creator_id": creator_id, "viewer_id": viewer_id}        
     except Exception as e:
         logger.error(f"Lỗi khi trích xuất A/B HLS: {e}")
         return {"creator_id": None, "viewer_id": None}
@@ -461,6 +477,8 @@ def extract_ab_watermark_hls(video_bytes: bytes) -> dict:
             os.remove(tmp_video_in.name)
         import shutil
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+def extract_video_audio_watermark(video_bytes: bytes) -> dict:
     """
     Trích xuất ID từ âm thanh siêu âm của Video bằng FFT.
     Trả về dict chứa creator_id (18kHz) và viewer_id (20kHz).
