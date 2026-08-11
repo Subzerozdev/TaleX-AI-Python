@@ -11,19 +11,16 @@ from blind_watermark import WaterMark
 # IMAGE BLIND WATERMARK
 # ---------------------------------------------------------
 
-WM_SHAPE_LENGTH = 64
+WM_SHAPE_LENGTH_OLD = 64
+WM_SHAPE_LENGTH_NEW = 128
 
-def _pad_id(creator_id: str) -> str:
-    """Đệm chuỗi cho đủ chiều dài cố định để thuật toán extract hoạt động đúng."""
-    # Lọc bỏ các ký tự không phải ASCII để đảm bảo 1 character = 1 byte
+def _pad_id_v2(creator_id: str, viewer_id: str = "") -> str:
+    """Đệm chuỗi 128 bytes chứa cả 2 ID."""
     creator_id_ascii = creator_id.encode('ascii', 'ignore').decode('ascii')
-    payload = f"ID: {creator_id_ascii} - Website: talex.pro.vn"
-    # Pad bằng khoảng trắng để đạt chuẩn đúng 64 ký tự (64 bytes)
-    return payload.ljust(WM_SHAPE_LENGTH, ' ')[:WM_SHAPE_LENGTH]
-
-def _unpad_id(padded_id: str) -> str:
-    # Dọn dẹp khoảng trắng dư thừa
-    return padded_id.strip()
+    viewer_id_ascii = viewer_id.encode('ascii', 'ignore').decode('ascii') if viewer_id else "NONE"
+    
+    payload = f"C:{creator_id_ascii}|V:{viewer_id_ascii}"
+    return payload.ljust(WM_SHAPE_LENGTH_NEW, ' ')[:WM_SHAPE_LENGTH_NEW]
 
 def _ensure_3_channels(image_bytes: bytes) -> bytes:
     """Xử lý ảnh grayscale (2D) hoặc RGBA (4D) về BGR (3D) để tránh lỗi tuple index out of range của blind_watermark."""
@@ -48,9 +45,9 @@ def _ensure_3_channels(image_bytes: bytes) -> bytes:
         
     return encoded_image.tobytes()
 
-def embed_image_watermark(image_bytes: bytes, creator_id: str) -> bytes:
+def embed_image_watermark(image_bytes: bytes, creator_id: str, viewer_id: str = "") -> bytes:
     """Nhúng watermark ẩn vào hình ảnh (DWT-DCT-SVD)."""
-    padded_id = _pad_id(creator_id)
+    padded_id = _pad_id_v2(creator_id, viewer_id)
     
     # Xử lý lỗi tuple index out of range cho ảnh đen trắng
     processed_image_bytes = _ensure_3_channels(image_bytes)
@@ -83,9 +80,8 @@ def embed_image_watermark(image_bytes: bytes, creator_id: str) -> bytes:
             
     return out_bytes
 
-def extract_image_watermark(image_bytes: bytes) -> str:
-    """Trích xuất watermark ẩn từ hình ảnh."""
-    # Xử lý lỗi tuple index out of range cho ảnh đen trắng
+def extract_image_watermark(image_bytes: bytes) -> dict:
+    """Trích xuất watermark ẩn từ hình ảnh. Trả về dict chứa creator_id và viewer_id."""
     processed_image_bytes = _ensure_3_channels(image_bytes)
     
     tmp_in = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
@@ -97,12 +93,37 @@ def extract_image_watermark(image_bytes: bytes) -> str:
             password_img=settings.WATERMARK_PASSWORD_IMG, 
             password_wm=settings.WATERMARK_PASSWORD_WM
         )
-        # Vì chuỗi luôn bắt đầu bằng chữ "I" (mã ASCII là 73 = 01001001)
-        # Hàm int.from_bytes của thư viện sẽ CẮT MẤT 1 số 0 ở đầu của bit đầu tiên.
-        # Do đó 64 ký tự = 64 * 8 = 512 bits, trừ đi 1 bit số 0 bị cắt, kết quả LUÔN LÀ 511 bits!
-        wm_shape_exact = (WM_SHAPE_LENGTH * 8) - 1
-        extracted = bwm.extract(tmp_in.name, wm_shape=wm_shape_exact, mode='str')
-        return _unpad_id(extracted)
+        
+        # 1. Thử quét với format mới (128 bytes) chứa cả 2 ID
+        try:
+            wm_shape_exact = (WM_SHAPE_LENGTH_NEW * 8) - 1
+            extracted = bwm.extract(tmp_in.name, wm_shape=wm_shape_exact, mode='str')
+            extracted_clean = extracted.strip()
+            
+            if extracted_clean.startswith("C:"):
+                parts = extracted_clean.split("|V:")
+                creator_id = parts[0][2:] if len(parts) > 0 else None
+                viewer_id = parts[1] if len(parts) > 1 else None
+                if viewer_id == "NONE":
+                    viewer_id = None
+                return {"creator_id": creator_id, "viewer_id": viewer_id}
+        except Exception:
+            pass
+            
+        # 2. Quét dự phòng với format cũ (64 bytes) chỉ chứa Creator ID
+        try:
+            wm_shape_exact = (WM_SHAPE_LENGTH_OLD * 8) - 1
+            extracted = bwm.extract(tmp_in.name, wm_shape=wm_shape_exact, mode='str')
+            extracted_clean = extracted.strip()
+            
+            if extracted_clean.startswith("ID:"):
+                c_id = extracted_clean.replace("ID: ", "").split(" - ")[0]
+                return {"creator_id": c_id, "viewer_id": None}
+        except Exception:
+            pass
+            
+        return {"creator_id": None, "viewer_id": None}
+        
     except Exception as e:
         logger.error(f"Lỗi khi trích xuất blind watermark ảnh: {e}")
         raise e

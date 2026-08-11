@@ -17,6 +17,7 @@ router = APIRouter(
 async def embed_watermark_api(
     file: UploadFile = File(...),
     creator_id: str = Form(...),
+    viewer_id: str = Form(""),
     media_type: str = Form(...)  # "IMAGE" or "VIDEO"
 ):
     """
@@ -27,7 +28,7 @@ async def embed_watermark_api(
         file_bytes = await file.read()
         
         if media_type == "IMAGE":
-            watermarked_bytes = embed_image_watermark(file_bytes, creator_id)
+            watermarked_bytes = embed_image_watermark(file_bytes, creator_id, viewer_id)
             return Response(content=watermarked_bytes, media_type="image/png")
             
         elif media_type == "VIDEO":
@@ -53,8 +54,8 @@ async def extract_watermark_api(
         file_bytes = await file.read()
         
         if media_type == "IMAGE":
-            creator_id = extract_image_watermark(file_bytes)
-            return {"creator_id": creator_id, "viewer_id": None}
+            extracted_ids = extract_image_watermark(file_bytes)
+            return extracted_ids
             
         elif media_type == "VIDEO":
             extracted_ids = extract_video_audio_watermark(file_bytes)
