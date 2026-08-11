@@ -54,11 +54,14 @@ async def extract_watermark_api(
         
         if media_type == "IMAGE":
             creator_id = extract_image_watermark(file_bytes)
-            return {"creator_id": creator_id}
+            return {"creator_id": creator_id, "viewer_id": None}
             
         elif media_type == "VIDEO":
-            creator_id = extract_video_audio_watermark(file_bytes)
-            return {"creator_id": f"ID: {creator_id} - Website: talex.pro.vn"}
+            extracted_ids = extract_video_audio_watermark(file_bytes)
+            return {
+                "creator_id": f"ID: {extracted_ids['creator_id']} - Website: talex.pro.vn" if extracted_ids.get('creator_id') else None,
+                "viewer_id": extracted_ids.get('viewer_id')
+            }
             
 
         else:

@@ -241,9 +241,59 @@ def _binary_to_string(binary_str: str) -> str:
             chars.append(chr(int(byte, 2)))
     return ''.join(chars)
 
-def extract_video_audio_watermark(video_bytes: bytes) -> str:
+def _extract_ook_from_audio(audio_data: np.ndarray, sample_rate: int, freq_target: float, bit_duration: float) -> str:
+    """Phân tích OOK từ mảng audio theo tần số và độ dài bit."""
+    chunk_size = int(sample_rate * bit_duration)
+    best_data_bits = None
+    
+    for phase in range(10):
+        offset = int((phase / 10.0) * chunk_size)
+        if offset + chunk_size > len(audio_data):
+            break
+            
+        audio_shifted = audio_data[offset:]
+        num_chunks = len(audio_shifted) // chunk_size
+        powers = []
+        
+        for i in range(num_chunks):
+            chunk = audio_shifted[i*chunk_size : (i+1)*chunk_size]
+            fft_result = np.fft.rfft(chunk)
+            freqs = np.fft.rfftfreq(chunk_size, 1.0/sample_rate)
+            
+            idx_freq = np.argmin(np.abs(freqs - freq_target))
+            power = np.sum(np.abs(fft_result[max(0, idx_freq-2) : min(len(fft_result), idx_freq+3)])**2)
+            powers.append(power)
+            
+        if not powers:
+            continue
+            
+        sorted_powers = np.sort(powers)
+        top_10_percent = sorted_powers[int(len(sorted_powers)*0.9):]
+        if len(top_10_percent) == 0:
+            threshold = np.mean(powers) * 1.5
+        else:
+            threshold = np.median(top_10_percent) * 0.3
+        
+        binary_sequence = "".join(["1" if p > threshold else "0" for p in powers])
+        
+        header = "10101010"
+        header_idx = binary_sequence.find(header)
+        
+        if header_idx != -1:
+            best_data_bits = binary_sequence[header_idx + len(header):]
+            break
+    
+    if best_data_bits is None:
+        return None
+        
+    extracted_str = _binary_to_string(best_data_bits)
+    clean_id = ''.join(c for c in extracted_str if 32 <= ord(c) <= 126)
+    return clean_id
+
+def extract_video_audio_watermark(video_bytes: bytes) -> dict:
     """
-    Trích xuất ID từ âm thanh siêu âm 18kHz của Video bằng FFT.
+    Trích xuất ID từ âm thanh siêu âm của Video bằng FFT.
+    Trả về dict chứa creator_id (18kHz) và viewer_id (20kHz).
     """
     tmp_video_in = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
     tmp_audio_out = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
@@ -279,71 +329,17 @@ def extract_video_audio_watermark(video_bytes: bytes) -> str:
         if len(audio_data.shape) > 1:
             audio_data = audio_data.mean(axis=1)
             
-        # 3. Phân tích OOK ở 18kHz (từng chunk 0.02s)
-        bit_duration = 0.02
-        chunk_size = int(sample_rate * bit_duration)
-        freq_target = 18000.0
+        # 3. Phân tích OOK ở 18kHz (Creator, 0.02s) và 20kHz (Viewer, 0.05s)
+        creator_id = _extract_ook_from_audio(audio_data, sample_rate, 18000.0, 0.02)
+        viewer_id = _extract_ook_from_audio(audio_data, sample_rate, 20000.0, 0.05)
         
-        # HLS và amix có thể làm lệch pha (time shift) dẫn đến cắt sai bit
-        # Ta sẽ quét 10 pha (offset) khác nhau để tìm ra pha chuẩn nhất khớp với header
-        best_data_bits = None
-        
-        for phase in range(10):
-            offset = int((phase / 10.0) * chunk_size)
-            if offset + chunk_size > len(audio_data):
-                break
-                
-            audio_shifted = audio_data[offset:]
-            num_chunks = len(audio_shifted) // chunk_size
-            powers = []
+        if not creator_id and not viewer_id:
+            raise ValueError("Không tìm thấy tín hiệu watermark nào trong video (Không thấy header)")
             
-            for i in range(num_chunks):
-                chunk = audio_shifted[i*chunk_size : (i+1)*chunk_size]
-                # Thực hiện Fast Fourier Transform
-                fft_result = np.fft.rfft(chunk)
-                freqs = np.fft.rfftfreq(chunk_size, 1.0/sample_rate)
-                
-                # Tìm index của tần số gần 18000Hz nhất
-                idx_18k = np.argmin(np.abs(freqs - freq_target))
-                
-                # Tính năng lượng quanh dải 18kHz
-                power = np.sum(np.abs(fft_result[max(0, idx_18k-2) : min(len(fft_result), idx_18k+3)])**2)
-                powers.append(power)
-                
-            if not powers:
-                continue
-                
-            # 4. Xác định ngưỡng (threshold) để phân biệt bit 1 và bit 0
-            sorted_powers = np.sort(powers)
-            top_10_percent = sorted_powers[int(len(sorted_powers)*0.9):]
-            if len(top_10_percent) == 0:
-                threshold = np.mean(powers) * 1.5
-            else:
-                threshold = np.median(top_10_percent) * 0.3 # 30% của peak
-            
-            binary_sequence = "".join(["1" if p > threshold else "0" for p in powers])
-            
-            # 5. Tìm chuỗi header '10101010' để đồng bộ (sync)
-            header = "10101010"
-            header_idx = binary_sequence.find(header)
-            
-            if header_idx != -1:
-                # Tìm thấy header! Offset này là chính xác!
-                best_data_bits = binary_sequence[header_idx + len(header):]
-                break
-        
-        if best_data_bits is None:
-            raise ValueError("Không tìm thấy tín hiệu watermark trong video (Không thấy header)")
-            
-        data_bits = best_data_bits
-        
-        # 6. Dịch ngược thành string
-        creator_id_extracted = _binary_to_string(data_bits)
-        
-        # Lọc bỏ các ký tự rác (chỉ lấy ASCII in được)
-        clean_id = ''.join(c for c in creator_id_extracted if 32 <= ord(c) <= 126)
-        
-        return clean_id
+        return {
+            "creator_id": creator_id,
+            "viewer_id": viewer_id
+        }
         
     except FileNotFoundError:
         logger.error("Lỗi: Không tìm thấy FFmpeg trên máy chủ.")
