@@ -383,81 +383,70 @@ def extract_ab_watermark_hls(video_bytes: bytes) -> dict:
     """
     Trích xuất Viewer ID từ một đoạn video bị quay lén (đã áp dụng A/B Watermarking).
     Thuật toán:
-    1. Chia video thành các khoảng thời gian (chunk) dài 4 giây.
-    2. Ở mỗi chunk, trích xuất 1 frame ở giữa (ví dụ: giây thứ 2, 6, 10...).
-    3. Dùng OCR (PyTesseract) quét frame đó xem có chữ 'talex' không (tương đương Bản A).
-    4. Gom kết quả quét thành chuỗi nhị phân (Ví dụ: 10101).
-    5. Giải mã chuỗi nhị phân thành ViewerID gốc.
+    1. Trích xuất 1 frame mỗi 4 giây bằng FFmpeg (1 lệnh duy nhất cho lẹ).
+    2. Dùng OCR (PyTesseract) quét tối đa 32 frames đầu tiên (để tránh timeout).
+    3. Gom kết quả quét thành chuỗi nhị phân (Ví dụ: 10101).
+    4. Giải mã chuỗi nhị phân thành ViewerID gốc.
     """
     import pytesseract
     from PIL import Image
     import cv2
     import math
+    import glob
 
     tmp_video_in = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
     tmp_video_in.write(video_bytes)
     tmp_video_in.close()
     
+    tmp_dir = tempfile.mkdtemp()
     ffmpeg_bin = _get_ffmpeg_path()
     
-    # 1. Tính độ dài video
-    probe_cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", tmp_video_in.name]
-    probe_res = subprocess.run(probe_cmd, capture_output=True, text=True)
-    
-    duration = 0
-    if probe_res.stdout:
-        import json
-        try:
-            info = json.loads(probe_res.stdout)
-            duration = float(info.get("format", {}).get("duration", 0))
-        except:
-            pass
-            
-    if duration == 0:
-        os.remove(tmp_video_in.name)
-        return {"creator_id": None, "viewer_id": None}
-        
-    chunk_length = 4
-    num_chunks = math.floor(duration / chunk_length)
-    
     binary_str = ""
-    
     try:
-        # Lặp qua từng chunk để lấy frame ở giữa
-        for i in range(num_chunks):
-            target_time = i * chunk_length + (chunk_length / 2)
-            tmp_frame = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
-            tmp_frame.close()
+        # 1. Trích xuất frames: 1 frame mỗi 4 giây (fps=1/4)
+        # Bắt đầu lấy từ giây thứ 2 (để né cảnh chuyển mờ đầu chunk)
+        # Nhưng fps=1/4 sẽ tự động chia đều.
+        cmd = [
+            ffmpeg_bin, "-y", "-i", tmp_video_in.name,
+            "-vf", "fps=1/4", "-q:v", "2",
+            os.path.join(tmp_dir, "frame_%04d.jpg")
+        ]
+        subprocess.run(cmd, capture_output=True)
+        
+        # Lấy danh sách các frame đã xuất (sắp xếp theo thời gian)
+        frames = sorted(glob.glob(os.path.join(tmp_dir, "frame_*.jpg")))
+        
+        # Chỉ quét tối đa 32 frames (tương đương 32 bits = 2 phút) để tránh timeout API
+        frames_to_scan = frames[:32]
+        
+        if not frames_to_scan:
+            return {"creator_id": None, "viewer_id": None}
             
-            # Cắt frame
-            cmd = [
-                ffmpeg_bin, "-y", "-ss", str(target_time), "-i", tmp_video_in.name,
-                "-vframes", "1", "-q:v", "2", tmp_frame.name
-            ]
-            subprocess.run(cmd, capture_output=True)
-            
-            # Đọc bằng OpenCV và quét OCR góc trên bên phải
-            if os.path.exists(tmp_frame.name) and os.path.getsize(tmp_frame.name) > 0:
-                img = cv2.imread(tmp_frame.name)
-                # Cắt góc trên bên phải (nơi chứa Pattern A)
-                h, w = img.shape[:2]
-                roi = img[0:int(h*0.2), int(w*0.5):w] # Lấy nửa trên bên phải
+        for frame_path in frames_to_scan:
+            img = cv2.imread(frame_path)
+            if img is None:
+                binary_str += "0"
+                continue
                 
-                # Quét OCR
-                text = pytesseract.image_to_string(roi).lower()
-                if "talex" in text or "pro" in text:
-                    binary_str += "1"
-                else:
-                    binary_str += "0"
+            # Cắt góc trên bên phải (nơi chứa Pattern A - x=W-tw-10, y=10)
+            h, w = img.shape[:2]
+            # Pattern nằm ở góc trên bên phải, ta cắt 15% chiều cao và 30% chiều rộng từ mép phải
+            roi = img[0:int(h*0.15), int(w*0.7):w] 
+            
+            # Tiền xử lý để tăng khả năng nhận diện chữ trắng
+            # Chuyển sang ảnh xám
+            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            # Tăng độ tương phản (Threshold)
+            _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+            
+            # Quét OCR
+            text = pytesseract.image_to_string(thresh).lower()
+            if "talex" in text or "pro" in text or "vn" in text:
+                binary_str += "1"
             else:
                 binary_str += "0"
                 
-            if os.path.exists(tmp_frame.name):
-                os.remove(tmp_frame.name)
-                
-        # Giả lập: Nếu người dùng upload nguyên vẹn từ đầu, ta có mã nhị phân
-        # Ở đây vì không có DB map mã nhị phân -> ID, ta trả về chuỗi bit giả lập.
-        # Trong thực tế, AI sẽ query DB để tìm User có mã Binary tương ứng.
+        # Giả lập: Lấy ra Viewer ID từ chuỗi bit thu được
         viewer_id = None
         if "1" in binary_str:
             viewer_id = f"User_Binary_{binary_str}"
@@ -470,6 +459,8 @@ def extract_ab_watermark_hls(video_bytes: bytes) -> dict:
     finally:
         if os.path.exists(tmp_video_in.name): 
             os.remove(tmp_video_in.name)
+        import shutil
+        shutil.rmtree(tmp_dir, ignore_errors=True)
     """
     Trích xuất ID từ âm thanh siêu âm của Video bằng FFT.
     Trả về dict chứa creator_id (18kHz) và viewer_id (20kHz).
