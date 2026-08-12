@@ -284,11 +284,13 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
             font_path = "C\\\\:/Windows/Fonts/arial.ttf"
             font_param = f"fontfile={font_path}:"
 
-        # Lệnh Version A (Có Pattern A - ví dụ là 1 text nhỏ ở góc phải)
-        # Sử dụng font mặc định của FFmpeg hoặc arial trên Windows để tránh lỗi thiếu font
+        # Lệnh Version A (Có marker pixel nhị phân tại góc trên bên phải)
+        # Thay vì dùng chữ mờ khó đọc, ta vẽ 1 hình vuông nhỏ màu đỏ tươi 6x6px
+        # tại vị trí cố định (W-16, 10) — dễ phát hiện bằng so sánh màu pixel.
+        # opacity=1.0 đảm bảo marker luôn rõ ràng sau HLS encode.
         cmd_a = [
             ffmpeg_bin, "-y", "-i", tmp_video_in.name,
-            "-vf", f"drawtext={font_param}text='talex.pro.vn':x=W-tw-10:y=10:fontsize=24:fontcolor=white@0.8",
+            "-vf", "drawbox=x=iw-16:y=10:w=6:h=6:color=red@1.0:t=fill",
             "-c:v", "libx264", "-preset", "fast",
             "-force_key_frames", "expr:gte(t,n_forced*4)",
             "-g", "120", "-sc_threshold", "0",
@@ -434,33 +436,35 @@ def extract_ab_watermark_hls(video_bytes: bytes) -> dict:
             if img is None:
                 binary_str += "0"
                 continue
-                
-            # Cắt góc trên bên phải (nơi chứa Pattern A - x=W-tw-10, y=10)
+
+            # Phát hiện marker pixel đỏ tươi 6x6px tại vị trí cố định (W-16, y=10)
+            # embed: drawbox=x=iw-16:y=10:w=6:h=6:color=red@1.0:t=fill
             h, w = img.shape[:2]
-            # Pattern nằm ở góc trên bên phải, ta cắt 15% chiều cao và 30% chiều rộng từ mép phải
-            roi = img[0:int(h*0.15), int(w*0.7):w] 
-            
-            # Phóng to ảnh 3 lần để Tesseract dễ đọc chữ nhỏ (fontsize=12)
-            roi = cv2.resize(roi, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-            
-            # Tiền xử lý để tăng khả năng nhận diện chữ trắng
-            # Chuyển sang ảnh xám
-            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-            
-            # Lọc nhiễu và làm nét
-            blurred = cv2.GaussianBlur(gray, (3, 3), 0)
-            gray = cv2.addWeighted(gray, 1.5, blurred, -0.5, 0)
-            
-            # Threshold động hoặc thấp (vì opacity=0.3 làm chữ có màu xám tối)
-            _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
-            
-            # Quét OCR với custom config
-            custom_config = r'--oem 3 --psm 6'
-            text = pytesseract.image_to_string(thresh, config=custom_config).lower()
-            if "talex" in text or "pro" in text or "vn" in text:
+            x_start = w - 16
+            y_start = 10
+            x_end = min(x_start + 8, w)  # Cho phép sai lệch nhỏ do HLS re-encode
+            y_end = min(y_start + 8, h)
+
+            roi = img[y_start:y_end, x_start:x_end]  # BGR
+            if roi.size == 0:
+                binary_str += "0"
+                continue
+
+            # Kênh R phải cao (>150), kênh G và B phải thấp (<80) → pixel màu đỏ tươi
+            r_channel = roi[:, :, 2]  # OpenCV: BGR → index 2 = R
+            g_channel = roi[:, :, 1]
+            b_channel = roi[:, :, 0]
+
+            red_pixels = int(((r_channel > 150) & (g_channel < 80) & (b_channel < 80)).sum())
+            total_pixels = roi.shape[0] * roi.shape[1]
+
+            # Nếu > 20% pixel trong vùng là đỏ tươi → đây là chunk Version A → bit 1
+            if total_pixels > 0 and (red_pixels / total_pixels) > 0.20:
                 binary_str += "1"
+                logger.debug(f"Frame {frame_path}: red_ratio={red_pixels/total_pixels:.2f} → bit=1")
             else:
                 binary_str += "0"
+                logger.debug(f"Frame {frame_path}: red_ratio={red_pixels/total_pixels if total_pixels>0 else 0:.2f} → bit=0")
                 
         # Giả lập: Lấy ra Viewer ID từ chuỗi bit thu được
         viewer_id = None
