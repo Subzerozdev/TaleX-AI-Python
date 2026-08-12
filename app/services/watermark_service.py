@@ -490,14 +490,35 @@ def extract_ab_watermark_hls(video_bytes: bytes) -> dict:
         if "1" in binary_str:
             viewer_id = f"User_Binary_{binary_str}"
             
-        # Lấy thêm Creator ID từ Audio Watermark (sóng siêu âm)
+        # L\u1ea5y thêm Creator ID từ Audio Watermark (sóng siêu âm)
         creator_id = None
         try:
             audio_extracted = extract_video_audio_watermark(video_bytes)
             creator_id = audio_extracted.get("creator_id")
         except Exception as e:
             logger.warning(f"Không thể trích xuất audio watermark: {e}")
-            
+
+        # Fallback: nếu Audio Watermark thất bại (video bị cắt/nén mất đoạn đầu),
+        # dùng AI Fingerprint (Milvus) để truy ra chủ sở hữu gốc qua nội dung video.
+        if not creator_id:
+            logger.info("Audio Watermark thất bại, kích hoạt Fallback Video Fingerprint...")
+            try:
+                from app.fingerprint.extractor import extract_frames_from_video
+                from app.fingerprint.hasher import hash_frames
+                from app.fingerprint.content_ownership import resolve_content_cluster
+
+                frames = extract_frames_from_video(video_bytes)
+                if frames:
+                    fingerprints = hash_frames(frames)
+                    if fingerprints:
+                        vectors = [fp["vector"] for fp in fingerprints]
+                        cluster = resolve_content_cluster(vectors, creator_id="", is_video=True)
+                        if cluster.matched:
+                            creator_id = cluster.original_creator_id
+                            logger.info(f"Video Fingerprint Fallback thành công! Creator ID = {creator_id}")
+            except Exception as e:
+                logger.error(f"Lỗi khi chạy Video Fingerprint Fallback: {e}")
+
         return {"creator_id": creator_id, "viewer_id": viewer_id}        
     except Exception as e:
         logger.error(f"Lỗi khi trích xuất A/B HLS: {e}")
