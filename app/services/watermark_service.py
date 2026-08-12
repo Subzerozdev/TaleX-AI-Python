@@ -236,6 +236,7 @@ def embed_video_audio_watermark(video_bytes: bytes, creator_id: str) -> bytes:
             
         with open(tmp_video_out.name, "rb") as f:
             out_bytes = f.read()
+        return out_bytes
             
     except FileNotFoundError:
         raise ValueError("Lỗi: Không tìm thấy phần mềm FFmpeg trên máy chủ. Vui lòng cài đặt FFmpeg và thêm vào biến môi trường PATH.")
