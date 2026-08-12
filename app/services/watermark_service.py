@@ -164,8 +164,8 @@ def _generate_ultrasound_wav(creator_id: str, output_wav_path: str):
         
     audio_signal = np.concatenate(audio_data)
     
-    # 80% âm lượng — 8kHz đủ nghe thấy nhưng được ngưỡi dùng chấp nhận vì rất nhỏ
-    audio_signal = np.int16(audio_signal * 32767 * 0.8)
+    # Giảm âm lượng xuống còn 5% (0.05) để người dùng không bị chói tai (nghe như tiếng rít)
+    audio_signal = np.int16(audio_signal * 32767 * 0.05)
     
     wavfile.write(output_wav_path, sample_rate, audio_signal)
 
@@ -353,23 +353,31 @@ def _extract_ook_from_audio(audio_data: np.ndarray, sample_rate: int, freq_targe
         num_chunks = len(audio_shifted) // chunk_size
         powers = []
         
-        for i in range(num_chunks):
+        # Chỉ phân tích 18 giây đầu tiên (360 chunks * 0.05s = 18s) vì watermark UUID dài tối đa 15s.
+        # Nếu phân tích cả video dài, lượng chunk '0' sẽ áp đảo và làm sai lệch threshold.
+        max_chunks = min(num_chunks, 360)
+        
+        for i in range(max_chunks):
             chunk = audio_shifted[i*chunk_size : (i+1)*chunk_size]
             fft_result = np.fft.rfft(chunk)
             freqs = np.fft.rfftfreq(chunk_size, 1.0/sample_rate)
             
             idx_freq = np.argmin(np.abs(freqs - freq_target))
-            power = np.sum(np.abs(fft_result[max(0, idx_freq-2) : min(len(fft_result), idx_freq+3)])**2)
+            # Mở rộng dải lấy mẫu xung quanh đỉnh 8kHz để thu được nhiều năng lượng hơn khi volume nhỏ
+            power = np.sum(np.abs(fft_result[max(0, idx_freq-3) : min(len(fft_result), idx_freq+4)])**2)
             powers.append(power)
             
         if not powers:
             continue
             
-        # Threshold = mean + 2*std — ổn định hơn top-10% median khi audio nền lớn
+        # Vì ta chỉ lấy 18s đầu tiên (chứa trọn UUID), tỉ lệ bit '0' và '1' là xấp xỉ 50/50.
+        # Do đó threshold hoàn hảo nhất chính là Mean hoặc Median của mảng, thay vì Mean + 2*Std.
         powers_arr = np.array(powers)
-        threshold = np.mean(powers_arr) + 2.0 * np.std(powers_arr)
-        if threshold == 0:
-            threshold = np.mean(powers_arr) * 1.5
+        threshold = np.mean(powers_arr)
+        
+        # Nếu nhiễu quá thấp, thiết lập một ngưỡng tối thiểu
+        if threshold < 1e-6:
+            threshold = 1e-6
             
         binary_sequence = "".join(["1" if p > threshold else "0" for p in powers])
 
