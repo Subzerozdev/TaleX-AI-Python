@@ -273,7 +273,7 @@ async def _process_pipeline_job(data: dict):
                     upload_to_s3, new_s3_key, watermarked_bytes, content_type="image/png", bucket=job.s3_bucket
                 )
             elif job.media_type == "VIDEO":
-                from app.services.watermark_service import embed_ab_watermark_hls
+                from app.services.watermark_service import embed_ab_watermark_hls, embed_video_audio_watermark
                 from app.aws.s3_client import upload_dir_to_s3
                 import tempfile
                 import shutil
@@ -281,7 +281,11 @@ async def _process_pipeline_job(data: dict):
                 # Tạo thư mục chứa HLS tạm
                 tmp_hls_dir = tempfile.mkdtemp()
                 try:
-                    await asyncio.to_thread(embed_ab_watermark_hls, file_bytes, tmp_hls_dir)
+                    # Nhúng audio watermark (Creator ID) vào video gốc trước
+                    audio_wm_bytes = await asyncio.to_thread(embed_video_audio_watermark, file_bytes, job.creator_id)
+                    
+                    # Dùng video đã nhúng audio để tạo A/B HLS
+                    await asyncio.to_thread(embed_ab_watermark_hls, audio_wm_bytes, tmp_hls_dir)
                     # S3 Prefix: "videos/ab_hls/{mediaId}"
                     new_s3_key = f"videos/ab_hls/{job.media_id}"
                     await asyncio.to_thread(upload_dir_to_s3, tmp_hls_dir, new_s3_key, bucket=job.s3_bucket)
