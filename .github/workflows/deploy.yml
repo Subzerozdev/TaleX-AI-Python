@@ -73,6 +73,11 @@ jobs:
             MODERATION_FRAME_INTERVAL=2.0
             MONGO_URI=${{ secrets.MONGO_URI }}
             MONGO_DB_NAME=${{ secrets.MONGO_DB_NAME }}
+            DB_HOST=${{ secrets.DB_HOST }}
+            DB_PORT=${{ secrets.DB_PORT }}
+            DB_NAME=${{ secrets.DB_NAME }}
+            DB_USERNAME=${{ secrets.DB_USERNAME }}
+            DB_PASSWORD=${{ secrets.DB_PASSWORD }}
             ENVEOF
 
             sed -i 's/^[[:space:]]*//' .env
