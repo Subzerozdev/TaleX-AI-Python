@@ -323,9 +323,6 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
         raise e
     finally:
         if os.path.exists(tmp_video_in.name): os.remove(tmp_video_in.name)
-        if os.path.exists(tmp_video_out.name): os.remove(tmp_video_out.name)
-        
-    return out_bytes
 
 def _binary_to_string(binary_str: str) -> str:
     """Chuyển chuỗi bit sang string (ví dụ '01000001' -> 'A')."""
