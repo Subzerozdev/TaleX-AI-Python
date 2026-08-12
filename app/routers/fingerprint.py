@@ -25,10 +25,14 @@ router = APIRouter(prefix="/api/v1", tags=["Fingerprint"])
 async def process(
     request: Request,
     media_id: str = Form(description="ID video/ảnh (UUID từ Spring Boot)"),
+    creator_id: str = Form(description="ID creator sở hữu media này"),
     file: UploadFile = File(description="File video hoặc ảnh"),
 ):
     """
     Upload file video/ảnh → tạo fingerprint → kiểm tra trùng lặp.
+
+    Endpoint test/debug thủ công — luồng thật chạy qua Kafka
+    (kafka_consumer_service.py:_process_pipeline_job), không qua route này.
 
     - Rate limit: 5 request/phút (xử lý nặng).
     - Hỗ trợ: mp4, avi, mkv, mov, webm, flv, png, jpg, jpeg, webp, bmp.
@@ -38,7 +42,7 @@ async def process(
     file_bytes = await file.read()
     filename = file.filename or "unknown"
 
-    return process_fingerprint(media_id, file_bytes, filename)
+    return process_fingerprint(media_id, creator_id, file_bytes, filename)
 
 
 @router.get("/fingerprint/{media_id}", response_model=FingerprintInfo)

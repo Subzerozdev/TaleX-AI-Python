@@ -115,10 +115,14 @@ async def consume_loop():
 #
 # VIDEO tách semaphore riêng vì mỗi job trích tới FINGERPRINT_MAX_FRAMES=300 frame PNG giữ
 # hết trong RAM cùng lúc (extractor.py) cộng thêm tiến trình FFmpeg riêng — ước tính ~400-
-# 500MB/job, nặng hơn hẳn ảnh. Nâng lên bằng mức ảnh (8) để rút ngắn thời gian xử lý hàng
-# đợi kiểm duyệt/bản quyền — đổi lại mem_limit của container đã tăng lên 4g (xem
-# docker-compose.yml) để chịu được worst-case ~8 video chạy cùng lúc (~4GB).
-_VIDEO_JOB_SEMAPHORE = asyncio.Semaphore(8)
+# 500MB/job, nặng hơn hẳn ảnh — CHƯA kể watermark (encode song song 2 bản HLS/job, xem
+# watermark_service.py) tốn thêm RAM/CPU đáng kể so với lúc con số 8 được chọn ban đầu.
+# Giảm xuống 4 để khớp với trần cpus:4.5 của container (docker-compose.yml) + -threads 2
+# mỗi lệnh ffmpeg encode (4 job × 2 luồng = 8 luồng, vẫn trong tầm kiểm soát của trần CPU,
+# không để 8 job cùng lúc gây context-thrashing dồn dập như trước) và giữ RAM an toàn dưới
+# mem_limit mới (4.5g) — xem docs vận hành nội bộ để biết số đo RAM thật khi cần điều chỉnh
+# lại. Ảnh giữ nguyên 8 vì watermark ảnh (blind_watermark) nhẹ CPU hơn hẳn watermark video.
+_VIDEO_JOB_SEMAPHORE = asyncio.Semaphore(4)
 _IMAGE_JOB_SEMAPHORE = asyncio.Semaphore(8)
 
 # Debounce cho _process_debezium_series: đã ghi nhận thực tế 1 series bị CDC gửi lại

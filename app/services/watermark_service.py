@@ -288,9 +288,14 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
         # Thay vì dùng chữ mờ khó đọc, ta vẽ 1 hình vuông nhỏ màu đỏ tươi 6x6px
         # tại vị trí cố định (W-16, 10) — dễ phát hiện bằng so sánh màu pixel.
         # opacity=1.0 đảm bảo marker luôn rõ ràng sau HLS encode.
+        # -threads 2: KHÔNG giới hạn thì libx264 tự chiếm hết core có sẵn cho 1 job encode
+        # — khi nhiều video watermark chạy song song (semaphore), các job tranh nhau CPU
+        # gây context-thrashing thay vì tận dụng đúng trần cpus: của container. Giới hạn
+        # 2 luồng/lệnh để nhiều job chạy êm hơn trong cùng 1 trần CPU cố định.
         cmd_a = [
             ffmpeg_bin, "-y", "-i", tmp_video_in.name,
             "-vf", "drawbox=x=iw-16:y=10:w=6:h=6:color=red@1.0:t=fill",
+            "-threads", "2",
             "-c:v", "libx264", "-preset", "fast",
             "-force_key_frames", "expr:gte(t,n_forced*4)",
             "-g", "120", "-sc_threshold", "0",
@@ -298,10 +303,11 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
             "-hls_time", "4", "-hls_playlist_type", "vod",
             "-f", "hls", os.path.join(dir_a, "playlist.m3u8")
         ]
-        
+
         # Lệnh Version B (Không có watermark)
         cmd_b = [
             ffmpeg_bin, "-y", "-i", tmp_video_in.name,
+            "-threads", "2",
             "-c:v", "libx264", "-preset", "fast",
             "-force_key_frames", "expr:gte(t,n_forced*4)",
             "-g", "120", "-sc_threshold", "0",
