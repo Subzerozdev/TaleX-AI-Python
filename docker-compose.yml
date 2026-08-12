@@ -9,16 +9,19 @@ services:
     build: .
     ports:
       - "8000:8000"
-    # VPS chỉ có 5.8GB RAM chia cho nhiều service (BE+Postgres+QuestDB, AI+Milvus). Ưu tiên
-    # tốc độ xử lý kiểm duyệt/bản quyền hơn — nâng trần lên 4g để chịu được mức song song cao
-    # (8 video + 8 ảnh cùng lúc, mỗi video ~400-500MB). Vẫn giữ trần (không bỏ hẳn) để nếu có
-    # vượt, chỉ container này bị Docker tự kill + tự restart (restart: unless-stopped), không
-    # kéo sập các container khác trên cùng VPS.
-    mem_limit: 4g
-    # VPS chỉ có 4 core — FFmpeg giải mã video tốn CPU nặng. Nâng lên 3.5 core (chừa 0.5 cho
-    # BE/Postgres/QuestDB) để rút ngắn thời gian xử lý video, đổi lại các service khác có thể
-    # phản hồi chậm hơn khi AI đang xử lý nặng.
-    cpus: 3.5
+    # VPS nâng cấp lên 8GB RAM / 6 core (từ 5.8GB / 4 core) chia cho nhiều service (BE+
+    # Postgres+QuestDB, AI+Milvus). Ưu tiên tốc độ xử lý watermark/kiểm duyệt/bản quyền —
+    # nâng trần lên 4.5g. Con số này CHƯA tính peak RAM thật của tính năng Blind Watermark
+    # (encode song song 2 bản HLS/video) — cần đo lại dưới tải 4 video cùng lúc trước khi
+    # coi là an toàn lâu dài (xem docs vận hành nội bộ). Vẫn giữ trần (không bỏ hẳn) để nếu
+    # có vượt, chỉ container này bị Docker tự kill + tự restart (restart: unless-stopped),
+    # không kéo sập các container khác trên cùng VPS.
+    mem_limit: 4500m
+    # 6 core tổng — ưu tiên tốc độ xử lý watermark cho AI-Python (4.5/6), phần còn lại
+    # (1.5 core) chia cho BE (ưu tiên 1.0 vì phục vụ traffic user trực tiếp) + Milvus +
+    # Postgres + QuestDB. Đánh đổi có chủ đích: các service kia chạy trần khá mỏng, nếu
+    # thấy chậm (vd. Milvus search timeout) thì nới Milvus trước, không đụng vào phần BE.
+    cpus: 4.5
     env_file:
       - .env
     environment:
@@ -56,6 +59,12 @@ services:
     ports:
       - "19530:19530"
       - "9091:9091"
+    # Trước đây KHÔNG giới hạn, dựa vào phần dư của các container khác — trên VPS 6 core/
+    # 8GB mới, đặt trần rõ ràng để Milvus không thể chiếm hết CPU/RAM còn lại khi AI-Python
+    # đang xử lý nặng. Trần khá mỏng theo chủ đích (ưu tiên AI-Python) — nếu search
+    # fingerprint bị chậm/timeout, đây là chỗ đầu tiên cần nới thêm.
+    mem_limit: 600m
+    cpus: 0.25
     environment:
       ETCD_USE_EMBED: "true"
       ETCD_DATA_DIR: "/var/lib/milvus/etcd"

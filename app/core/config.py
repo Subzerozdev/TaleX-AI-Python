@@ -50,6 +50,11 @@ class Settings:
     # giảm false positive (rủi ro chấp nhận được vì giờ đã route qua Staff review,
     # không còn tự động chặn cứng — xem ContentPipelineServiceImpl.handleCopyrightResult).
     FINGERPRINT_SIMILARITY_THRESHOLD: float = float(os.getenv("FINGERPRINT_SIMILARITY_THRESHOLD", "0.90"))
+    # Ngưỡng riêng cho "đây có phải CÙNG 1 nội dung" (gán chủ sở hữu cụm) — CHẶT HƠN ngưỡng
+    # vi phạm ở trên (0.90), vì gán nhầm 2 tác phẩm khác nhau vào chung 1 chủ sở hữu (merge
+    # nhầm cụm) là lỗi nghiêm trọng hơn nhiều so với bỏ sót 1 vi phạm — bỏ sót vẫn còn Staff
+    # review sau, gán nhầm chủ sở hữu thì im lặng chặn luôn quyền báo vi phạm về sau.
+    FINGERPRINT_CLUSTER_THRESHOLD: float = float(os.getenv("FINGERPRINT_CLUSTER_THRESHOLD", "0.95"))
     FINGERPRINT_MIN_MATCH_SECONDS: int = int(os.getenv("FINGERPRINT_MIN_MATCH_SECONDS", "5"))
     FINGERPRINT_MAX_GAP_SECONDS: int = int(os.getenv("FINGERPRINT_MAX_GAP_SECONDS", "2"))
     FINGERPRINT_MAX_FILE_SIZE_MB: int = int(os.getenv("FINGERPRINT_MAX_FILE_SIZE_MB", "100"))
