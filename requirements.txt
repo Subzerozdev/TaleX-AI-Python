@@ -32,6 +32,8 @@ opencv-python-headless==4.11.0.86
 imagehash==4.3.2
 Pillow==11.2.1
 numpy==2.4.4
+pandas>=2.0.0
+openpyxl>=3.1.0
 pymilvus==2.5.12
 python-multipart==0.0.20
 
@@ -46,6 +48,7 @@ motor==3.5.0
 # Recommend Ranking
 lightgbm==4.6.0
 dnspython>=2.0.0
+psycopg2-binary>=2.9.9
 
 # Watermark
 blind-watermark>=0.4.0

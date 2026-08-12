@@ -1,14 +1,14 @@
-import os
-from datetime import datetime
+from pathlib import Path
 from typing import List
-import lightgbm as lgb
-import pandas as pd
 from fastapi import APIRouter, HTTPException, status, Body
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from motor.motor_asyncio import AsyncIOMotorClient # Thư viện kết nối MongoDB Async
+from motor.motor_asyncio import AsyncIOMotorClient
+import psycopg2
+import os
 
 from app.core.config import settings
-from app.services.recommendation_trainer import RecommendationTrainer
+from app.services.recommendation_service import RecommendationService
 
 router = APIRouter(
     prefix="/api/v1/recommendations",
@@ -27,15 +27,18 @@ db = client[DB_NAME]
 # =====================================================================
 # KHỞI TẠO & LOAD BỘ NÃO AI LÊN RAM NGAY KHI START SERVER
 # =====================================================================
-MODEL_PATH = "app/services/lgb_ranking_model.txt"
-trainer = RecommendationTrainer(model_save_path=MODEL_PATH)
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+MODEL_PATH = DATA_DIR / "lgb_ranking_model.txt"
+TRAIN_DATA_EXCEL_PATH = DATA_DIR / "train_data.xlsx"
 
-if os.path.exists(MODEL_PATH):
-    print(f"[AI ENGINE] Đang nạp mô hình LightGBM từ {MODEL_PATH} lên RAM...")
-    ranking_model = lgb.Booster(model_file=MODEL_PATH)
-else:
-    print(f"[⚠️ CẢNH BÁO] Không tìm thấy file {MODEL_PATH}! Vui lòng chạy endpoint /train-init trước.")
-    ranking_model = None
+# Service instance encapsulates training and ranking logic
+service = RecommendationService(
+    db=db,
+    model_save_path=str(MODEL_PATH),
+    train_data_csv_path=str(DATA_DIR / "train_data.csv"),
+    train_data_excel_path=str(TRAIN_DATA_EXCEL_PATH),
+)
 
 
 # =====================================================================
@@ -60,54 +63,7 @@ class RankResultItem(BaseModel):
 # =====================================================================
 # HELPER FUNCTIONS: CHUẨN HÓA DỮ LIỆU TỪ MONGODB (DATA NORMALIZATION)
 # =====================================================================
-def normalize_user_doc(doc: dict) -> dict:
-    """Đảm bảo cấu trúc map dữ liệu User luôn an toàn trước khi nạp vào Trainer"""
-    if not doc:
-        return {
-            "age": 20, "gender": "UNKNOWN", "language": "vi",
-            "preferences": {"preferred_genres_by_watch_time": {}, "preferred_tags_by_clicks_last_7d": {}},
-            "interactions": {"like_to_click_ratio": 0.0, "bookmark_to_click_ratio": 0.0},
-            "deep_engagement": {"watch_time_last_7d": 0.0},
-            "monetization": {"total_spent_amount": 0.0, "last_purchase_time": None}
-        }
-    
-    # Xử lý chuẩn hóa trường thời gian BSON Date nếu có sang định dạng chuỗi ISO
-    monetization = doc.get("monetization", {})
-    last_pur = monetization.get("last_purchase_time")
-    if isinstance(last_pur, datetime):
-        monetization["last_purchase_time"] = last_pur.isoformat()
-
-    return {
-        "age": doc.get("age", 20),
-        "gender": doc.get("gender", "UNKNOWN"),
-        "language": doc.get("language", "vi"),
-        "preferences": doc.get("preferences", {}),
-        "interactions": doc.get("interactions", {}),
-        "deep_engagement": doc.get("deep_engagement", {}),
-        "monetization": monetization
-    }
-
-def normalize_series_doc(doc: dict) -> dict:
-    """Chuyển đổi các snake_case từ Mongo BSON về camelCase mà hàm phẳng hóa yêu cầu"""
-    if not doc:
-        return {}
-    
-    updated_at = doc.get("released_updated_at")
-    if isinstance(updated_at, datetime):
-        updated_at = updated_at.isoformat()
-
-    return {
-        "id": str(doc.get("_id")),
-        "contentType": doc.get("content_type", "MOVIE"),
-        "category": doc.get("category", []),
-        "tags": doc.get("tags", []),
-        "ageRating": doc.get("age_rating", "G"),
-        "language": doc.get("language", "vi"),
-        "rating": doc.get("rating", 0.0),
-        "releasedUpdatedAt": updated_at,
-        "interactionStats": doc.get("interaction_stats", {}),
-        "engagementStats": doc.get("engagement_stats", {})
-    }
+# Normalization and DB logic moved into RecommendationService
 
 
 # =====================================================================
@@ -123,8 +79,7 @@ def trigger_train_init(token: str = None):
         )
         
     try:
-        trainer_init = RecommendationTrainer()
-        total_samples, saved_path = trainer_init.run_init_pipeline(num_samples=12000)
+        total_samples, saved_path = service.train_init(num_samples=12000)
         return TrainInitResponse(
             status="SUCCESS",
             message="Đã khởi tạo thành công kho dữ liệu mẫu và đồng bộ bộ não LightGBM!",
@@ -138,92 +93,108 @@ def trigger_train_init(token: str = None):
         )
 
 
+@router.post("/train-init-real", response_model=TrainInitResponse, status_code=status.HTTP_201_CREATED)
+def trigger_train_init_real(token: str = None, max_samples: int = 10000):
+    """
+    Khởi tạo bộ não từ DỮ LIỆU THỰC tế từ PostgreSQL (Supabase) + MongoDB (Atlas).
+    
+    Quá trình:
+    1. Kết nối tới PostgreSQL và lấy danh sách AccountImpression
+    2. Với mỗi impression, lấy UserFeatureDocument + SeriesMetadata từ MongoDB
+    3. Trích xuất 26 features, log chi tiết cho debugging
+    4. Huấn luyện LightGBM model trên dữ liệu thực
+    5. Lưu model và export train_data.csv + train_data.xlsx
+    
+    Nếu không tìm thấy dữ liệu thực, sẽ fallback về mock data pipeline.
+    """
+    if token and token != "talex_secret_demo_2026":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, 
+            detail="Mã token kích hoạt không hợp lệ!"
+        )
+    
+    try:
+        # Tạo kết nối PostgreSQL từ .env
+        pg_host = os.getenv("DB_HOST", "aws-1-ap-southeast-2.pooler.supabase.com")
+        pg_port = os.getenv("DB_PORT", "6543")
+        pg_database = os.getenv("DB_NAME", "postgres")
+        pg_user = os.getenv("DB_USERNAME", "")
+        pg_password = os.getenv("DB_PASSWORD", "")
+        
+        if not pg_user or not pg_password:
+            raise ValueError("PostgreSQL credentials missing in .env (DB_USERNAME, DB_PASSWORD)")
+        
+        pg_conn = psycopg2.connect(
+            host=pg_host,
+            port=pg_port,
+            database=pg_database,
+            user=pg_user,
+            password=pg_password
+        )
+        
+        # Gọi service.train_init_real với PostgreSQL + MongoDB connections
+        total_samples, saved_path = service.train_init_real(
+            pg_db=pg_conn, 
+            mongo_uri=settings.MONGO_URI, 
+            mongo_db_name=settings.MONGO_DB_NAME, 
+            max_samples=max_samples
+        )
+        
+        # Đóng kết nối PostgreSQL
+        pg_conn.close()
+        
+        return TrainInitResponse(
+            status="SUCCESS",
+            message=f"Đã khởi tạo thành công bộ não từ {total_samples} dòng dữ liệu THỰC (PostgreSQL + MongoDB)!",
+            total_samples_generated=total_samples,
+            model_saved_at=saved_path
+        )
+        
+    except psycopg2.OperationalError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Không kết nối được tới PostgreSQL: {str(e)}"
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Lỗi cấu hình: {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi hệ thống khi huấn luyện với dữ liệu thực: {str(e)}"
+        )
+
+
 @router.post("/rank", response_model=List[RankResultItem])
 async def rank_candidates(payload: RankRequest = Body(...)):
     """
     API Xếp Hạng Tinh: Lấy dữ liệu thực từ MongoDB Atlas, phẳng hóa đặc trưng
     và sử dụng LightGBM để tính toán điểm số xác suất phản hồi cụ thể.
     """
-    global ranking_model
-    
-    # Phòng thủ nếu chưa có file model vật lý
-    if ranking_model is None:
-        if os.path.exists(MODEL_PATH):
-            ranking_model = lgb.Booster(model_file=MODEL_PATH)
-        else:
-            # Nếu chưa có model, trả về điểm mặc định 0.0 cho tất cả ứng viên
-            return [RankResultItem(seriesId=s_id, score=0.0) for s_id in payload.seriesIds]
-
     if not payload.seriesIds:
         return []
 
     try:
-        # -----------------------------------------------------------------
-        # BƯỚC 1: TRUY VẤN MONGODB ATLAS THẬT (Dựa trên Java Entity mappings)
-        # -----------------------------------------------------------------
-        # Lấy document từ collection 'user_features' qua khoá chính '_id'[cite: 1]
-        raw_user = await db.user_features.find_one({"_id": payload.accountId})
-        user_doc = normalize_user_doc(raw_user)
-
-        # Lấy danh sách tài liệu từ collection 'series_metadata' bằng toán tử $in[cite: 6]
-        series_cursor = db.series_metadata.find({"_id": {"$in": payload.seriesIds}})
-        raw_series_list = await series_cursor.to_list(length=len(payload.seriesIds))
-
-        # Đưa vào Map để tìm kiếm nhanh theo ID gốc O(1)
-        series_map = {}
-        for rs in raw_series_list:
-            norm_s = normalize_series_doc(rs)
-            series_map[norm_s["id"]] = norm_s
-
-        # -----------------------------------------------------------------
-        # BƯỚC 2: PHẲNG HÓA VÀ TRÍCH XUẤT ĐẶC TRƯNG CHÉO (FEATURE ENGINEERING)
-        # -----------------------------------------------------------------
-        flattened_features = []
-        valid_series_ids = []
-
-        for s_id in payload.seriesIds:
-            s_doc = series_map.get(s_id)
-            if not s_doc:
-                continue # Bỏ qua nếu ID không thực sự tồn tại trong Database
-            
-            # Đưa qua hàm xử lý logic chung (bao gồm tương tác, share, comment...)
-            row_feat = trainer.process_and_flatten(user_doc, s_doc)
-            flattened_features.append(row_feat)
-            valid_series_ids.append(s_id)
-
-        # Nếu không trích xuất được bất kỳ dữ liệu nào từ DB, trả về điểm 0.0
-        if not flattened_features:
-            return [RankResultItem(seriesId=s_id, score=0.0) for s_id in payload.seriesIds]
-
-        # Khởi tạo ma trận dữ liệu dự đoán
-        df_inference = pd.DataFrame(flattened_features)
-        df_inference["user_gender"] = df_inference["user_gender"].astype("category")
-        df_inference["series_content_type"] = df_inference["series_content_type"].astype("category")
-
-        # -----------------------------------------------------------------
-        # BƯỚC 3: AI INFERENCE CHẤM ĐIỂM VÀ ĐÓNG GÓI KẾT QUẢ CÓ ĐIỂM SỐ
-        # -----------------------------------------------------------------
-        predicted_scores = ranking_model.predict(df_inference)
-
-        # Gộp ID cùng với điểm số tương ứng và làm tròn 4 chữ số thập phân
-        candidate_results = [
-            RankResultItem(seriesId=s_id, score=round(float(score), 4))
-            for s_id, score in zip(valid_series_ids, predicted_scores)
-        ]
-
-        # Sắp xếp danh sách kết quả dựa trên trường 'score' từ cao xuống thấp
-        candidate_results.sort(key=lambda x: x.score, reverse=True)
-
-        # Trường hợp có series ứng viên nào bị thiếu do lệch DB, tự động bổ sung xuống cuối với điểm 0.0
-        processed_ids = set(valid_series_ids)
-        for original_id in payload.seriesIds:
-            if original_id not in processed_ids:
-                candidate_results.append(RankResultItem(seriesId=original_id, score=0.0))
-
-        print(f"[AI MONGO REALTIME SUCCESS] Đã chấm điểm xong cho User {payload.accountId}")
-        return candidate_results
-
+        ranked = await service.rank(payload.accountId, payload.seriesIds)
+        return [RankResultItem(**r) for r in ranked]
     except Exception as e:
         print(f"[❌ AI REALTIME ERROR] Sự cố xảy ra: {str(e)}")
-        # Fallback khi lỗi hệ thống: Trả về danh sách thô kèm điểm số 0.0
         return [RankResultItem(seriesId=s_id, score=0.0) for s_id in payload.seriesIds]
+
+
+@router.get("/train-data/download")
+def download_train_data():
+    """Tải file tập dữ liệu huấn luyện dạng Excel từ server."""
+    excel_path = TRAIN_DATA_EXCEL_PATH
+    if not excel_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy file train_data.xlsx. Vui lòng chạy /train-init trước."
+        )
+    return FileResponse(
+        path=str(excel_path),
+        filename=excel_path.name,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
