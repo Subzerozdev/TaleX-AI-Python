@@ -141,12 +141,13 @@ def _string_to_binary(text: str) -> str:
 
 def _generate_ultrasound_wav(creator_id: str, output_wav_path: str):
     """
-    Sinh ra file âm thanh WAV chứa sóng siêu âm mã hóa creator_id.
-    Kỹ thuật: On-Off Keying (OOK) ở tần số 18kHz.
+    Sinh ra file âm thanh WAV chứa sóng mã hóa creator_id.
+    Kỹ thuật: On-Off Keying (OOK) ở tần số 8kHz (an toàn qua AAC).
+    Lý do chọn 8kHz: AAC giữ tốt dải 0-8kHz, 18kHz bị cắt mạnh bởi psychoacoustic model.
     """
-    freq = 18000.0  # 18kHz
+    freq = 8000.0  # 8kHz — an toàn qua AAC 192k
     sample_rate = 44100
-    bit_duration = 0.02  # 50 bits per second (nhanh gấp 5 lần so với cũ)
+    bit_duration = 0.05  # 20 bits per second
     
     # Thêm header '10101010' để dễ nhận diện lúc decode
     binary_str = "10101010" + _string_to_binary(creator_id)
@@ -156,20 +157,15 @@ def _generate_ultrasound_wav(creator_id: str, output_wav_path: str):
     audio_data = []
     for bit in binary_str:
         if bit == '1':
-            # Sóng sine 18kHz
             wave = np.sin(2 * np.pi * freq * t)
         else:
-            # Im lặng
             wave = np.zeros_like(t)
         audio_data.append(wave)
         
-    # Gộp tất cả bit lại thành 1 mảng 1D
     audio_signal = np.concatenate(audio_data)
     
-    # Chuẩn hóa về định dạng int16 (-32768 đến 32767)
-    # Tăng âm lượng siêu âm lên 50% max volume (32767 * 0.5) để sống sót qua AAC compression của AWS.
-    # Âm thanh 18kHz ở 50% âm lượng vẫn rất khó nghe thấy đối với hầu hết người lớn.
-    audio_signal = np.int16(audio_signal * 32767 * 0.5)
+    # 80% âm lượng — 8kHz đủ nghe thấy nhưng được ngưỡi dùng chấp nhận vì rất nhỏ
+    audio_signal = np.int16(audio_signal * 32767 * 0.8)
     
     wavfile.write(output_wav_path, sample_rate, audio_signal)
 
@@ -219,15 +215,15 @@ def embed_video_audio_watermark(video_bytes: bytes, creator_id: str) -> bytes:
             cmd.extend([
                 "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=first[a]",
                 "-map", "0:v", "-map", "[a]",
-                "-c:v", "copy", "-c:a", "aac", "-b:a", "320k", "-cutoff", "20000"
+                # Bitrate 192k + không đặt -cutoff — để codec tự quyết giữ tần số nào
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k"
             ])
         else:
-            # Không có audio gốc, dùng luôn audio watermark. Cắt độ dài bằng video.
             if video_duration:
                 cmd.extend(["-t", str(video_duration)])
             cmd.extend([
                 "-map", "0:v", "-map", "1:a",
-                "-c:v", "copy", "-c:a", "aac", "-b:a", "320k", "-cutoff", "20000"
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k"
             ])
             
         cmd.extend(["-loglevel", "error", tmp_video_out.name])
@@ -249,6 +245,7 @@ def embed_video_audio_watermark(video_bytes: bytes, creator_id: str) -> bytes:
     finally:
         if os.path.exists(tmp_video_in.name): os.remove(tmp_video_in.name)
         if os.path.exists(tmp_audio_wm.name): os.remove(tmp_audio_wm.name)
+        if os.path.exists(tmp_video_out.name): os.remove(tmp_video_out.name)
 
 def _get_ffmpeg_path():
     """Lấy đường dẫn FFmpeg, fallback về thư mục Desktop nếu không có trong PATH."""
@@ -288,9 +285,14 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
         # Thay vì dùng chữ mờ khó đọc, ta vẽ 1 hình vuông nhỏ màu đỏ tươi 6x6px
         # tại vị trí cố định (W-16, 10) — dễ phát hiện bằng so sánh màu pixel.
         # opacity=1.0 đảm bảo marker luôn rõ ràng sau HLS encode.
+        # -threads 2: KHÔNG giới hạn thì libx264 tự chiếm hết core có sẵn cho 1 job encode
+        # — khi nhiều video watermark chạy song song (semaphore), các job tranh nhau CPU
+        # gây context-thrashing thay vì tận dụng đúng trần cpus: của container. Giới hạn
+        # 2 luồng/lệnh để nhiều job chạy êm hơn trong cùng 1 trần CPU cố định.
         cmd_a = [
             ffmpeg_bin, "-y", "-i", tmp_video_in.name,
             "-vf", "drawbox=x=iw-16:y=10:w=6:h=6:color=red@1.0:t=fill",
+            "-threads", "2",
             "-c:v", "libx264", "-preset", "fast",
             "-force_key_frames", "expr:gte(t,n_forced*4)",
             "-g", "120", "-sc_threshold", "0",
@@ -298,10 +300,11 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
             "-hls_time", "4", "-hls_playlist_type", "vod",
             "-f", "hls", os.path.join(dir_a, "playlist.m3u8")
         ]
-        
+
         # Lệnh Version B (Không có watermark)
         cmd_b = [
             ffmpeg_bin, "-y", "-i", tmp_video_in.name,
+            "-threads", "2",
             "-c:v", "libx264", "-preset", "fast",
             "-force_key_frames", "expr:gte(t,n_forced*4)",
             "-g", "120", "-sc_threshold", "0",
@@ -361,14 +364,14 @@ def _extract_ook_from_audio(audio_data: np.ndarray, sample_rate: int, freq_targe
         if not powers:
             continue
             
-        sorted_powers = np.sort(powers)
-        top_10_percent = sorted_powers[int(len(sorted_powers)*0.9):]
-        if len(top_10_percent) == 0:
-            threshold = np.mean(powers) * 1.5
-        else:
-            threshold = np.median(top_10_percent) * 0.3
-        
+        # Threshold = mean + 2*std — ổn định hơn top-10% median khi audio nền lớn
+        powers_arr = np.array(powers)
+        threshold = np.mean(powers_arr) + 2.0 * np.std(powers_arr)
+        if threshold == 0:
+            threshold = np.mean(powers_arr) * 1.5
+            
         binary_sequence = "".join(["1" if p > threshold else "0" for p in powers])
+
         
         header = "10101010"
         header_idx = binary_sequence.find(header)
@@ -381,7 +384,14 @@ def _extract_ook_from_audio(audio_data: np.ndarray, sample_rate: int, freq_targe
         return None
         
     extracted_str = _binary_to_string(best_data_bits)
+    # Chỉ giữ ký tự in được ASCII (chữ + số + dấu phổ biến) — loại nhiễu ký tự đặc biệt
     clean_id = ''.join(c for c in extracted_str if 32 <= ord(c) <= 126)
+    # Nếu kết quả trông không giống UUID (quá nhiều ký tự đặc biệt so với alpha+digit),
+    # coi như thất bại — trả None tránh gây nhầm lẫn
+    alphanum = sum(c.isalnum() or c == '-' for c in clean_id)
+    if len(clean_id) == 0 or (alphanum / len(clean_id)) < 0.6:
+        logger.warning(f"OOK extract: kết quả nhiễu quá (alphanum ratio={alphanum/len(clean_id) if clean_id else 0:.2f}), bỏ qua")
+        return None
     return clean_id
 
 def extract_ab_watermark_hls(video_bytes: bytes) -> dict:
@@ -528,9 +538,9 @@ def extract_video_audio_watermark(video_bytes: bytes) -> dict:
         if len(audio_data.shape) > 1:
             audio_data = audio_data.mean(axis=1)
             
-        # 3. Phân tích OOK ở 18kHz (Creator, 0.02s) và 20kHz (Viewer, 0.05s)
-        creator_id = _extract_ook_from_audio(audio_data, sample_rate, 18000.0, 0.02)
-        viewer_id = _extract_ook_from_audio(audio_data, sample_rate, 20000.0, 0.05)
+        # 3. Phân tích OOK ở 8kHz (Creator, 0.05s) - đã update để qua màng lọc AAC
+        creator_id = _extract_ook_from_audio(audio_data, sample_rate, 8000.0, 0.05)
+        viewer_id = None # Viewer ID đã chuyển qua video A/B HLS
         
         if not creator_id and not viewer_id:
             raise ValueError("Không tìm thấy tín hiệu watermark nào trong video (Không thấy header)")

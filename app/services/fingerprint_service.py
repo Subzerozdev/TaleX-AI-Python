@@ -18,6 +18,7 @@ import threading
 from loguru import logger
 
 from app.core.config import settings
+from app.fingerprint.content_ownership import resolve_content_cluster
 from app.fingerprint.extractor import extract_frames_from_video, extract_image
 from app.fingerprint.hasher import hash_frames, hash_image, VECTOR_DIM
 from app.fingerprint.matcher import match_image_violation, match_segments
@@ -115,12 +116,28 @@ def process_fingerprint(
         logger.info(f"Fingerprint: superseded by newer job for media_id={media_id}, dropping stale write")
         raise StaleJobError(media_id)
 
+    # Xác định cụm nội dung + chủ sở hữu gốc TRƯỚC KHI xóa dòng cũ của chính media_id này.
+    # Bắt buộc phải resolve trước delete: nếu media_id này là dòng DUY NHẤT còn "sạch"
+    # (is_violation=False) trong cụm, xóa trước rồi mới resolve sẽ khiến chủ gốc "biến mất"
+    # khỏi Milvus đúng lúc tự tra cứu — làm mất quyền sở hữu của chính mình một cách oan uổng.
+    vectors = [fp["vector"] for fp in fingerprints]
+    cluster = resolve_content_cluster(vectors, creator_id=creator_id, is_video=is_video)
+    is_owner = cluster.matched and cluster.original_creator_id == creator_id
+
     # Xóa fingerprint cũ nếu media_id đã tồn tại (upsert)
     delete_by_media_id(media_id)
 
-    # Tìm trùng trong Milvus — loại trừ chính creator này (xem docstring hàm).
+    # Tìm trùng trong Milvus — loại trừ chính creator này (Milvus-level) VÀ loại trừ mọi
+    # dòng mà creator hiện tại chính là chủ sở hữu gốc đã ghi nhận (uploader_creator_id),
+    # dù dòng đó mang creator_id của người khác (bản sao) — đây là điểm sửa lỗi cốt lõi:
+    # chủ gốc không bao giờ bị báo vi phạm ngược với chính nội dung của mình, bất kể ai
+    # khác đã đăng bản sao trước đó.
     violations = _find_violations(
-        fingerprints, exclude_media_id=media_id, exclude_creator_id=creator_id, is_video=is_video
+        fingerprints,
+        exclude_media_id=media_id,
+        exclude_creator_id=creator_id,
+        is_video=is_video,
+        uploader_creator_id=creator_id,
     )
 
     if not _is_current_generation(media_id, my_gen):
@@ -129,8 +146,23 @@ def process_fingerprint(
         logger.info(f"Fingerprint: superseded by newer job for media_id={media_id}, dropping stale insert")
         raise StaleJobError(media_id)
 
-    # Lưu fingerprints mới vào Milvus
-    insert_fingerprints(media_id, creator_id, fingerprints)
+    # is_violation chỉ True khi upload này KHÔNG phải chủ sở hữu cụm VÀ có vi phạm thật —
+    # chủ sở hữu (is_owner=True) không bao giờ bị đánh dấu vi phạm dù trùng lặp bao nhiêu
+    # dòng khác trong cùng cụm của chính mình.
+    is_violation_flag = (not is_owner) and len(violations) > 0
+
+    # Lưu fingerprints mới vào Milvus — kèm thông tin cụm nội dung/chủ sở hữu gốc. Nếu
+    # matched=True, tái sử dụng NGUYÊN cluster_id/first_seen_at đã có (không tạo cụm mới,
+    # không ghi đè first_seen_at cũ bằng thời điểm hiện tại — giữ đúng thứ tự "ai trước").
+    insert_fingerprints(
+        media_id,
+        creator_id,
+        fingerprints,
+        content_cluster_id=cluster.cluster_id,
+        original_creator_id=cluster.original_creator_id,
+        first_seen_at=cluster.first_seen_at,
+        is_violation=is_violation_flag,
+    )
 
     # Tạo Content ID
     content_id = f"CID-{media_id}"
@@ -226,7 +258,11 @@ def _process_image(file_bytes: bytes) -> list[dict]:
 
 
 def _find_violations(
-    fingerprints: list[dict], exclude_media_id: str, exclude_creator_id: str = "", is_video: bool = True
+    fingerprints: list[dict],
+    exclude_media_id: str,
+    exclude_creator_id: str = "",
+    is_video: bool = True,
+    uploader_creator_id: str | None = None,
 ) -> list[dict]:
     """
     Tìm vi phạm trong Milvus (loại trừ cùng creator — xem match_segments/match_image_violation).
@@ -235,6 +271,9 @@ def _find_violations(
     tối thiểu FINGERPRINT_MIN_MATCH_SECONDS), ảnh chỉ có 1 điểm fingerprint duy nhất nên so
     khớp trực tiếp theo threshold — dùng chung match_segments() cho ảnh sẽ luôn ra duration=0,
     bị loại oan dù giống 100% (đã gặp thật, xem match_image_violation docstring).
+
+    uploader_creator_id: xem docstring match_segments()/match_image_violation() — bỏ qua
+        match mà uploader chính là chủ sở hữu gốc (original_creator_id) của cụm nguồn.
     """
     if not fingerprints:
         return []
@@ -259,10 +298,12 @@ def _find_violations(
             search_results=search_results,
             exclude_media_id=exclude_media_id,
             exclude_creator_id=exclude_creator_id,
+            uploader_creator_id=uploader_creator_id,
         )
 
     return match_image_violation(
         search_results=search_results,
         exclude_media_id=exclude_media_id,
         exclude_creator_id=exclude_creator_id,
+        uploader_creator_id=uploader_creator_id,
     )

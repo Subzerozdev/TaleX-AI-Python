@@ -54,3 +54,6 @@ psycopg2-binary>=2.9.9
 blind-watermark>=0.4.0
 scipy>=1.13.0
 pytesseract>=0.3.10
+
+# Testing
+pytest==9.1.1

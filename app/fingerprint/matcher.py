@@ -22,6 +22,7 @@ def match_segments(
     search_results: list[dict],
     exclude_media_id: int | None = None,
     exclude_creator_id: str | None = None,
+    uploader_creator_id: str | None = None,
 ) -> list[dict]:
     """
     Nối kết quả search rời rạc thành segments vi phạm.
@@ -30,11 +31,20 @@ def match_segments(
         query_fingerprints: List of { "timestamp": float, "vector": list }
                             — fingerprints của video mới.
         search_results: List of { "query_index": int, "media_id": int,
-                                   "creator_id": str, "timestamp": float, "score": float }
+                                   "creator_id": str, "timestamp": float, "score": float,
+                                   "original_creator_id": str, "is_violation": bool }
                         — kết quả từ Milvus search.
         exclude_media_id: Bỏ qua media_id này (dùng khi upsert — không so với chính mình).
         exclude_creator_id: Bỏ qua mọi match cùng creator này — không tự báo "vi phạm"
             nội dung của chính mình (vd. nhân vật lặp lại xuyên suốt 1 bộ truyện).
+        uploader_creator_id: Creator đang thực hiện upload — dùng để bỏ qua match mà
+            uploader chính là CHỦ SỞ HỮU GỐC (original_creator_id) của cụm nội dung nguồn,
+            dù dòng match đó mang creator_id của người khác (vd. B đã đăng bản sao nội
+            dung của A — hàng của B có creator_id=B nhưng original_creator_id=A; khi A
+            re-upload, hàng của B vẫn còn trong Milvus nhưng KHÔNG được tính là vi phạm
+            vì A mới là chủ sở hữu gốc được ghi nhận). Đây là điểm khác biệt so với
+            exclude_creator_id ở trên — cái đó chỉ loại theo creator_id THÔ của dòng match,
+            không biết ai là chủ sở hữu gốc thật sự.
 
     Returns:
         List of {
@@ -60,6 +70,17 @@ def match_segments(
         if exclude_media_id and result["media_id"] == exclude_media_id:
             continue
         if exclude_creator_id and result.get("creator_id") == exclude_creator_id:
+            continue
+        # Uploader là chủ sở hữu gốc của cụm nguồn này → không tự vi phạm nội dung
+        # của chính mình, bất kể dòng match đang mang creator_id của ai (bản sao).
+        if uploader_creator_id and result.get("original_creator_id") == uploader_creator_id:
+            continue
+        # Không bao giờ quy vi phạm vào 1 dòng ĐÃ bị gắn cờ là bản sao — tránh trỏ bằng
+        # chứng vào 1 bản sao trung gian thay vì nguồn thật. Đánh đổi: nếu top_k chỉ thấy
+        # đúng dòng bản-sao-này mà không thấy dòng chủ sở hữu gốc (hiếm khi top_k đủ rộng),
+        # lần match này bị bỏ qua thay vì gán sai — các dòng khác cùng cụm (nếu lọt top_k)
+        # vẫn đủ để phát hiện vi phạm bình thường.
+        if result.get("is_violation"):
             continue
 
         query_idx = result["query_index"]
@@ -110,6 +131,7 @@ def match_image_violation(
     search_results: list[dict],
     exclude_media_id: str | None = None,
     exclude_creator_id: str | None = None,
+    uploader_creator_id: str | None = None,
 ) -> list[dict]:
     """
     Tìm vi phạm cho ẢNH — khác video, ảnh chỉ có 1 điểm fingerprint duy nhất
@@ -122,6 +144,9 @@ def match_image_violation(
         search_results: kết quả search_similar() — đã loại trừ cùng creator ở Milvus.
         exclude_media_id: bỏ qua match trùng chính media_id đang xử lý (upsert).
         exclude_creator_id: bỏ qua match cùng creator (phòng hờ, Milvus đã lọc rồi).
+        uploader_creator_id: xem docstring match_segments() — bỏ qua match mà uploader
+            chính là original_creator_id (chủ sở hữu gốc) của cụm nguồn, dù dòng match
+            mang creator_id của người khác (bản sao).
 
     Returns:
         List of segment dict giống match_segments(), violation_type="IMAGE".
@@ -138,6 +163,10 @@ def match_image_violation(
             continue
         if exclude_creator_id and result.get("creator_id") == exclude_creator_id:
             continue
+        if uploader_creator_id and result.get("original_creator_id") == uploader_creator_id:
+            continue
+        if result.get("is_violation"):
+            continue  # xem đánh đổi ghi ở match_segments() — không quy vào bản sao trung gian
         if result["media_id"] in seen_media_ids:
             continue  # search_results đã sort theo score — giữ match tốt nhất mỗi nguồn
         seen_media_ids.add(result["media_id"])
