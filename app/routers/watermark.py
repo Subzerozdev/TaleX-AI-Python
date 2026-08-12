@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import Response
 from app.services.watermark_service import (
@@ -54,7 +55,33 @@ async def extract_watermark_api(
         file_bytes = await file.read()
         
         if media_type == "IMAGE":
-            extracted_ids = extract_image_watermark(file_bytes)
+            # 1. Thử giải mã Blind Watermark (DWT-DCT)
+            extracted_ids = await asyncio.to_thread(extract_image_watermark, file_bytes)
+            
+            # 2. Nếu thất bại (ảnh bị crop/sửa đổi), dùng AI Fingerprint (Milvus) làm lưới dự phòng
+            if not extracted_ids.get("creator_id"):
+                logger.info("Blind Watermark thất bại, kích hoạt Fallback AI Fingerprint...")
+                try:
+                    from app.fingerprint.extractor import extract_image
+                    from app.fingerprint.hasher import hash_image
+                    from app.fingerprint.content_ownership import resolve_content_cluster
+                    
+                    # Chạy nặng trên thread để không block API
+                    def _fallback_search():
+                        image = extract_image(file_bytes)
+                        vector = hash_image(image)
+                        cluster = resolve_content_cluster([vector], creator_id="", is_video=False)
+                        if cluster.matched:
+                            return cluster.original_creator_id
+                        return None
+                        
+                    creator_id_fallback = await asyncio.to_thread(_fallback_search)
+                    if creator_id_fallback:
+                        extracted_ids["creator_id"] = creator_id_fallback
+                        logger.info(f"Fallback thành công! Tìm thấy Creator ID = {creator_id_fallback}")
+                except Exception as e:
+                    logger.error(f"Lỗi khi chạy Fallback Fingerprint: {e}")
+                    
             return extracted_ids
             
         elif media_type == "VIDEO":
