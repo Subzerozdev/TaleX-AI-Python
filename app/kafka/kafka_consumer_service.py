@@ -256,12 +256,24 @@ async def _process_pipeline_job(data: dict):
         file_bytes = await asyncio.to_thread(download_from_s3, job.s3_key, job.s3_bucket, MAX_FILE_SIZE)
         filename = job.s3_key.rsplit("/", 1)[-1] if "/" in job.s3_key else job.s3_key
 
-        # 1. Run fingerprint pipeline TRÊN FILE GỐC (Trước khi bị nhiễu bởi Watermark)
+        # 1. Moderation (Check if safe before proceeding)
+        logger.info(f"Running moderation for mediaId={job.media_id}")
+        mod_result = await asyncio.to_thread(
+            moderate_media, file_bytes, job.media_type, job.media_id, job.correlation_id
+        )
+        await send_moderation_result(job.media_id, mod_result)
+
+        if not mod_result.get("isSafe"):
+            logger.warning(f"Media {job.media_id} failed moderation, aborting pipeline.")
+            # Java sẽ tự set INACTIVE thông qua kết quả Moderation, ta chỉ cần thoát
+            return
+
+        # 2. Run fingerprint pipeline TRÊN FILE GỐC (Trước khi bị nhiễu bởi Watermark)
         response = await asyncio.to_thread(
             process_fingerprint, job.media_id, job.creator_id, file_bytes, filename
         )
 
-        # 2. Nhúng watermark (IMAGE: blind_watermark, VIDEO: A/B HLS)
+        # 3. Nhúng watermark (IMAGE: blind_watermark, VIDEO: A/B HLS)
         try:
             watermarked_bytes = file_bytes
             original_s3_key = job.s3_key
@@ -298,7 +310,7 @@ async def _process_pipeline_job(data: dict):
             # Nếu nhúng watermark thất bại, ta bỏ qua file watermark (không có new_s3_key)
 
 
-        # 3. Generate Preview (Từ file gốc để ảnh thu nhỏ nét nhất, không bị nhiễu)
+        # 4. Generate Preview (Từ file gốc để ảnh thu nhỏ nét nhất, không bị nhiễu)
         preview_s3_key = None
         try:
             if job.media_type == "IMAGE":
