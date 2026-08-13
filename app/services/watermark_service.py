@@ -292,7 +292,7 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
         # 2 luồng/lệnh để nhiều job chạy êm hơn trong cùng 1 trần CPU cố định.
         cmd_a = [
             ffmpeg_bin, "-y", "-i", tmp_video_in.name,
-            "-vf", "drawbox=x=iw-16:y=10:w=6:h=6:color=red@1.0:t=fill",
+            "-vf", "drawbox=x=iw-20:y=20:w=8:h=8:color=magenta@1.0:t=fill",
             "-threads", "2",
             "-c:v", "libx264", "-preset", "fast",
             "-force_key_frames", "expr:gte(t,n_forced*4)",
@@ -456,34 +456,32 @@ def extract_ab_watermark_hls(video_bytes: bytes) -> dict:
                 binary_str += "0"
                 continue
 
-            # Phát hiện marker pixel đỏ tươi 6x6px tại vị trí cố định (W-16, y=10)
-            # embed: drawbox=x=iw-16:y=10:w=6:h=6:color=red@1.0:t=fill
+            # Thay vì dò đúng 1 toạ độ cố định (dễ bị trượt nếu video quay lén bị thêm viền đen,
+            # bị crop hoặc resize), ta quét toàn bộ góc trên bên phải (20% diện tích).
             h, w = img.shape[:2]
-            x_start = w - 16
-            y_start = 10
-            x_end = min(x_start + 8, w)  # Cho phép sai lệch nhỏ do HLS re-encode
-            y_end = min(y_start + 8, h)
+            y_start, y_end = 0, h // 5
+            x_start, x_end = int(w * 0.8), w
 
             roi = img[y_start:y_end, x_start:x_end]  # BGR
             if roi.size == 0:
                 binary_str += "0"
                 continue
 
-            # Kênh R phải cao (>150), kênh G và B phải thấp (<80) → pixel màu đỏ tươi
+            # Tìm màu Magenta (Hồng cánh sen: R và B cao, G thấp) — màu này cực hiếm trong tự nhiên/anime.
+            # Lưu ý: Nén video (HLS/YUV420) làm bợt màu rất mạnh, nên ngưỡng không được quá khắt khe
             r_channel = roi[:, :, 2]  # OpenCV: BGR → index 2 = R
             g_channel = roi[:, :, 1]
             b_channel = roi[:, :, 0]
 
-            red_pixels = int(((r_channel > 150) & (g_channel < 80) & (b_channel < 80)).sum())
-            total_pixels = roi.shape[0] * roi.shape[1]
+            magenta_pixels = int(((r_channel > 150) & (b_channel > 150) & (g_channel < 120)).sum())
 
-            # Nếu > 20% pixel trong vùng là đỏ tươi → đây là chunk Version A → bit 1
-            if total_pixels > 0 and (red_pixels / total_pixels) > 0.20:
+            # Chỉ cần tìm thấy > 5 pixel magenta (để chống chịu với nén/resize/crop quay lén) -> Version A
+            if magenta_pixels > 5:
                 binary_str += "1"
-                logger.debug(f"Frame {frame_path}: red_ratio={red_pixels/total_pixels:.2f} → bit=1")
+                logger.debug(f"Frame {frame_path}: found {magenta_pixels} magenta pixels → bit=1")
             else:
                 binary_str += "0"
-                logger.debug(f"Frame {frame_path}: red_ratio={red_pixels/total_pixels if total_pixels>0 else 0:.2f} → bit=0")
+                logger.debug(f"Frame {frame_path}: found {magenta_pixels} magenta pixels → bit=0")
                 
         # Giả lập: Lấy ra Viewer ID từ chuỗi bit thu được
         viewer_id = None
