@@ -146,7 +146,7 @@ _last_series_upsert_at: dict[str, float] = {}
 # hơn 60s một cách HỢP LỆ, không phải bị treo. Dùng chung 1 timeout cho ảnh lẫn video sẽ báo
 # lỗi oan cho video hợp lệ (job "timeout" trong khi ffmpeg bên dưới vẫn đang chạy đúng).
 _JOB_PROCESSING_TIMEOUT_SECONDS = 300
-_VIDEO_JOB_PROCESSING_TIMEOUT_SECONDS = 600
+_VIDEO_JOB_PROCESSING_TIMEOUT_SECONDS = 1200
 
 
 def _safe_dump(d: dict) -> str:

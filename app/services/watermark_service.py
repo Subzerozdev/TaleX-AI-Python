@@ -260,9 +260,9 @@ def _get_ffmpeg_path():
 
 def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
     """
-    Tạo 2 phiên bản HLS A và B từ video gốc.
-    Version A: Có đóng dấu (Pattern A)
-    Version B: Không đóng dấu (hoặc Pattern B)
+    Tạo đồng thời 2 phiên bản HLS A và B từ video gốc trong 1 lần decode duy nhất.
+    Version A: Có đóng dấu (Marker Pattern A ở góc trên phải)
+    Version B: Không đóng dấu (Clean)
     """
     tmp_video_in = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
     tmp_video_in.write(video_bytes)
@@ -276,53 +276,38 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
     ffmpeg_bin = _get_ffmpeg_path()
     
     try:
-        import platform
-        font_param = ""
-        if platform.system() == "Windows":
-            font_path = "C\\\\:/Windows/Fonts/arial.ttf"
-            font_param = f"fontfile={font_path}:"
-
-        # Lệnh Version A (Có marker pixel nhị phân tại góc trên bên phải)
-        # Thay vì dùng chữ mờ khó đọc, ta vẽ 1 hình vuông nhỏ màu đỏ tươi 6x6px
-        # tại vị trí cố định (W-16, 10) — dễ phát hiện bằng so sánh màu pixel.
-        # opacity=1.0 đảm bảo marker luôn rõ ràng sau HLS encode.
-        # -threads 2: KHÔNG giới hạn thì libx264 tự chiếm hết core có sẵn cho 1 job encode
-        # — khi nhiều video watermark chạy song song (semaphore), các job tranh nhau CPU
-        # gây context-thrashing thay vì tận dụng đúng trần cpus: của container. Giới hạn
-        # 2 luồng/lệnh để nhiều job chạy êm hơn trong cùng 1 trần CPU cố định.
-        cmd_a = [
+        # Lệnh FFmpeg xuất đồng thời cả Version A và Version B trong 1 lần decode:
+        # 1. split=2 tách luồng video decode thành 2 nhánh: [v_clean] và [v_mark_in]
+        # 2. [v_mark_in] đi qua drawbox vẽ marker magenta 8x8px tạo ra [v_wm]
+        # 3. [v_wm] + audio được encode HLS vào dir_a (Version A)
+        # 4. [v_clean] + audio được encode HLS vào dir_b (Version B)
+        # 5. Dùng preset veryfast và threads 4 để tối ưu tốc độ CPU
+        cmd = [
             ffmpeg_bin, "-y", "-i", tmp_video_in.name,
-            "-vf", "drawbox=x=iw-20:y=20:w=8:h=8:color=magenta@1.0:t=fill",
-            "-threads", "2",
-            "-c:v", "libx264", "-preset", "fast",
+            "-filter_complex", "[0:v]split=2[v_clean][v_mark_in];[v_mark_in]drawbox=x=iw-20:y=20:w=8:h=8:color=magenta@1.0:t=fill[v_wm]",
+            "-threads", "4",
+            # Output 1: Version A (Có watermark)
+            "-map", "[v_wm]", "-map", "0:a?",
+            "-c:v", "libx264", "-preset", "veryfast",
             "-force_key_frames", "expr:gte(t,n_forced*4)",
             "-g", "120", "-sc_threshold", "0",
             "-c:a", "aac", "-b:a", "128k",
             "-hls_time", "4", "-hls_playlist_type", "vod",
-            "-f", "hls", os.path.join(dir_a, "playlist.m3u8")
-        ]
-
-        # Lệnh Version B (Không có watermark)
-        cmd_b = [
-            ffmpeg_bin, "-y", "-i", tmp_video_in.name,
-            "-threads", "2",
-            "-c:v", "libx264", "-preset", "fast",
+            "-f", "hls", os.path.join(dir_a, "playlist.m3u8"),
+            # Output 2: Version B (Clean)
+            "-map", "[v_clean]", "-map", "0:a?",
+            "-c:v", "libx264", "-preset", "veryfast",
             "-force_key_frames", "expr:gte(t,n_forced*4)",
             "-g", "120", "-sc_threshold", "0",
             "-c:a", "aac", "-b:a", "128k",
             "-hls_time", "4", "-hls_playlist_type", "vod",
-            "-f", "hls", os.path.join(dir_b, "playlist.m3u8")
+            "-f", "hls", os.path.join(dir_b, "playlist.m3u8"),
         ]
 
-        logger.info("Đang render Version A HLS...")
-        res_a = subprocess.run(cmd_a, capture_output=True)
-        if res_a.returncode != 0:
-            raise RuntimeError(f"FFmpeg A failed: {res_a.stderr.decode('utf-8', errors='replace')}")
-
-        logger.info("Đang render Version B HLS...")
-        res_b = subprocess.run(cmd_b, capture_output=True)
-        if res_b.returncode != 0:
-            raise RuntimeError(f"FFmpeg B failed: {res_b.stderr.decode('utf-8', errors='replace')}")
+        logger.info("Đang render đồng thời Version A & Version B HLS (single-pass)...")
+        res = subprocess.run(cmd, capture_output=True)
+        if res.returncode != 0:
+            raise RuntimeError(f"FFmpeg A/B HLS failed: {res.stderr.decode('utf-8', errors='replace')}")
             
     except Exception as e:
         logger.error(f"Lỗi khi chạy A/B HLS: {e}")
