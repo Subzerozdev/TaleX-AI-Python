@@ -20,8 +20,8 @@ from PIL import Image
 from app.aws.rekognition_client import detect_moderation_labels
 from app.core.config import settings
 
-# Số lời gọi Rekognition chạy song song — đủ nhanh nhưng không vượt rate limit tài khoản.
-_REKOGNITION_MAX_CONCURRENCY = 8
+# Cố tình hạ concurrency xuống 2 và thêm sleep để tránh lỗi ProvisionedThroughputExceededException
+_REKOGNITION_MAX_CONCURRENCY = 2
 
 # Nhóm L1 taxonomy dùng ngưỡng confidence riêng (thấp hơn) — xem giải thích ở
 # REKOGNITION_VIOLENCE_CONFIDENCE_THRESHOLD trong config.py.
@@ -127,6 +127,8 @@ def _moderate_video(file_bytes: bytes) -> tuple[list[dict], list]:
     all_violations = []
 
     def _check_frame(index: int, timestamp_sec: float, frame_bytes: bytes):
+        import time
+        time.sleep(0.5)
         return index, timestamp_sec, detect_moderation_labels(frame_bytes)
 
     with ThreadPoolExecutor(max_workers=_REKOGNITION_MAX_CONCURRENCY) as executor:
