@@ -164,8 +164,8 @@ def _generate_ultrasound_wav(creator_id: str, output_wav_path: str):
         
     audio_signal = np.concatenate(audio_data)
     
-    # Giảm âm lượng xuống còn 5% (0.05) để người dùng không bị chói tai (nghe như tiếng rít)
-    audio_signal = np.int16(audio_signal * 32767 * 0.05)
+    # Giảm âm lượng xuống còn 1% (0.01) để tiếng bíp cực kỳ nhỏ, không gây chói tai
+    audio_signal = np.int16(audio_signal * 32767 * 0.01)
     
     wavfile.write(output_wav_path, sample_rate, audio_signal)
 
@@ -473,39 +473,41 @@ def extract_ab_watermark_hls(video_bytes: bytes) -> dict:
         if "1" in binary_str:
             viewer_id = f"User_Binary_{binary_str}"
             
-        # L\u1ea5y thêm Creator ID từ Audio Watermark (sóng siêu âm)
-        creator_id = None
+        # 1. Lấy Creator ID từ Audio Watermark (sóng siêu âm)
+        creator_id_audio = None
         try:
             audio_extracted = extract_video_audio_watermark(video_bytes)
-            creator_id = audio_extracted.get("creator_id")
+            creator_id_audio = audio_extracted.get("creator_id")
         except Exception as e:
             logger.warning(f"Không thể trích xuất audio watermark: {e}")
 
-        # Fallback: nếu Audio Watermark thất bại (video bị cắt/nén mất đoạn đầu),
-        # dùng AI Fingerprint (Milvus) để truy ra chủ sở hữu gốc qua nội dung video.
-        if not creator_id:
-            logger.info("Audio Watermark thất bại, kích hoạt Fallback Video Fingerprint...")
-            try:
-                from app.fingerprint.extractor import extract_frames_from_video
-                from app.fingerprint.hasher import hash_frames
-                from app.fingerprint.content_ownership import resolve_content_cluster
+        # 2. Lấy Creator ID từ Video Fingerprint (Milvus)
+        creator_id_fingerprint = None
+        try:
+            from app.fingerprint.extractor import extract_frames_from_video
+            from app.fingerprint.hasher import hash_frames
+            from app.fingerprint.content_ownership import resolve_content_cluster
 
-                frames = extract_frames_from_video(video_bytes)
-                if frames:
-                    fingerprints = hash_frames(frames)
-                    if fingerprints:
-                        vectors = [fp["vector"] for fp in fingerprints]
-                        cluster = resolve_content_cluster(vectors, creator_id="", is_video=True)
-                        if cluster.matched:
-                            creator_id = cluster.original_creator_id
-                            logger.info(f"Video Fingerprint Fallback thành công! Creator ID = {creator_id}")
-            except Exception as e:
-                logger.error(f"Lỗi khi chạy Video Fingerprint Fallback: {e}")
+            frames = extract_frames_from_video(video_bytes)
+            if frames:
+                fingerprints = hash_frames(frames)
+                if fingerprints:
+                    vectors = [fp["vector"] for fp in fingerprints]
+                    cluster = resolve_content_cluster(vectors, creator_id="", is_video=True)
+                    if cluster.matched:
+                        creator_id_fingerprint = cluster.original_creator_id
+                        logger.info(f"Video Fingerprint Fallback thành công! Creator ID = {creator_id_fingerprint}")
+        except Exception as e:
+            logger.error(f"Lỗi khi chạy Video Fingerprint Fallback: {e}")
 
-        return {"creator_id": creator_id, "viewer_id": viewer_id}        
+        return {
+            "creator_id_audio": creator_id_audio, 
+            "creator_id_fingerprint": creator_id_fingerprint, 
+            "viewer_id": viewer_id
+        }        
     except Exception as e:
         logger.error(f"Lỗi khi trích xuất A/B HLS: {e}")
-        return {"creator_id": None, "viewer_id": None}
+        return {"creator_id_audio": None, "creator_id_fingerprint": None, "viewer_id": None}
     finally:
         if os.path.exists(tmp_video_in.name): 
             os.remove(tmp_video_in.name)

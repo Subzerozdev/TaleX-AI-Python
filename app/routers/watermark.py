@@ -87,7 +87,8 @@ async def extract_watermark_api(
         elif media_type == "VIDEO":
             extracted_ids = extract_ab_watermark_hls(file_bytes)
             return {
-                "creator_id": extracted_ids.get('creator_id'),
+                "creator_id_audio": extracted_ids.get('creator_id_audio'),
+                "creator_id_fingerprint": extracted_ids.get('creator_id_fingerprint'),
                 "viewer_id": extracted_ids.get('viewer_id')
             }
             
