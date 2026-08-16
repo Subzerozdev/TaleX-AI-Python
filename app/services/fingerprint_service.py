@@ -283,10 +283,10 @@ def _find_violations(
     # Search Milvus — loại trừ cùng creator NGAY TẠI Milvus (xem docstring search_similar),
     # không chỉ lọc sau ở matcher.py, để không bỏ sót vi phạm thật với creator khác bị các
     # trang cũ của chính creator này chiếm hết chỗ trong top_k.
-    # top_k ảnh rộng hơn video hẳn (xem config.py FINGERPRINT_IMAGE_TOP_K) — ảnh chỉ 1 vector
-    # nên top_k=3 giới hạn cả mạng lưới chỉ 3 ứng viên, dễ bị vài tài khoản đạo nội dung
-    # chiếm hết chỗ, đẩy nguồn gốc thật ra ngoài; video giữ 3 vì đã tổng hợp qua nhiều frame.
-    top_k = 3 if is_video else settings.FINGERPRINT_IMAGE_TOP_K
+    # top_k video trước đây cố định =3 (xem config.py FINGERPRINT_VIDEO_TOP_K cho lý do
+    # tăng lên) — cùng rủi ro với ảnh: fingerprint cũ (media đã xóa nhưng vector giữ mãi)
+    # có thể chiếm hết suất top_k, đẩy nguồn thật đang sống ra ngoài kết quả.
+    top_k = settings.FINGERPRINT_VIDEO_TOP_K if is_video else settings.FINGERPRINT_IMAGE_TOP_K
     search_results = search_similar(vectors, top_k=top_k, exclude_creator_id=exclude_creator_id or None)
 
     if not search_results:

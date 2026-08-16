@@ -56,7 +56,10 @@ def resolve_content_cluster(
     if not vectors:
         return _mint_new_cluster(creator_id)
 
-    top_k = settings.FINGERPRINT_IMAGE_TOP_K if not is_video else 3
+    # top_k video dùng chung FINGERPRINT_VIDEO_TOP_K với _find_violations() — cùng rủi ro
+    # bị fingerprint cũ (media đã xóa nhưng vector giữ mãi) chiếm hết suất top_k, đẩy văng
+    # cụm/chủ sở hữu thật ra ngoài kết quả (xem config.py FINGERPRINT_VIDEO_TOP_K).
+    top_k = settings.FINGERPRINT_IMAGE_TOP_K if not is_video else settings.FINGERPRINT_VIDEO_TOP_K
     # KHÔNG loại trừ creator hiện tại — xem docstring module.
     raw_matches = search_similar(vectors, top_k=top_k, exclude_creator_id=None)
 

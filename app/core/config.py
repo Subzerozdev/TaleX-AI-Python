@@ -63,6 +63,13 @@ class Settings:
     # dung đăng lại cùng ảnh ở 3+ tài khoản khác, nguồn gốc thật có thể bị đẩy khỏi top_k.
     # Ảnh rẻ hơn video nhiều (1 vector vs tới 300) nên mở rộng top_k riêng cho ảnh không tốn kém.
     FINGERPRINT_IMAGE_TOP_K: int = int(os.getenv("FINGERPRINT_IMAGE_TOP_K", "20"))
+    # top_k=3 cho video từng bị lệch thật: 1 nội dung test bị upload/xóa/upload lại nhiều
+    # lần (fingerprint CŨ không bao giờ bị dọn, giữ mãi có chủ đích) tạo ra hàng loạt vector
+    # gần-như-giống-hệt nhau, chiếm hết 3 "suất" top_k, đẩy văng media ĐANG SỐNG THẬT ra
+    # khỏi kết quả — Java nhận về source_media_id không tồn tại (media test cũ), hiển thị
+    # "Unknown, có thể đã bị xóa" dù nguồn thật vẫn còn nguyên. Tăng lên đủ rộng để nguồn
+    # thật vẫn có chỗ chen vào dù có nhiều bản trùng cũ cạnh tranh.
+    FINGERPRINT_VIDEO_TOP_K: int = int(os.getenv("FINGERPRINT_VIDEO_TOP_K", "15"))
     # Giới hạn tổng số frame trích xuất để tạo fingerprint — không có cap này, video dài
     # (vd 1 tiếng) ở FPS mặc định sinh ra hàng nghìn frame, mỗi frame là 1 vector Milvus,
     # làm chậm xử lý và phình dữ liệu không cần thiết. Giống REKOGNITION_MAX_FRAMES bên
