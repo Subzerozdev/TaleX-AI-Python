@@ -23,6 +23,12 @@ from app.core.config import settings
 # Cố tình hạ concurrency xuống 2 và thêm sleep để tránh lỗi ProvisionedThroughputExceededException
 _REKOGNITION_MAX_CONCURRENCY = 2
 
+# AWS Rekognition DetectModerationLabels từ chối ảnh có cạnh nào > 10000px
+# (ImageTooLargeException) — comic dạng webtoon/long-strip (cuộn dọc, cao gấp
+# nhiều lần chiều rộng, VD 720x10825) vượt ngưỡng này thường xuyên. Chừa margin
+# an toàn (9900 thay vì đúng 10000) để tránh lỗi làm tròn khi resize.
+_REKOGNITION_MAX_DIMENSION = 9900
+
 # Nhóm L1 taxonomy dùng ngưỡng confidence riêng (thấp hơn) — xem giải thích ở
 # REKOGNITION_VIOLENCE_CONFIDENCE_THRESHOLD trong config.py.
 _LOWER_THRESHOLD_CATEGORIES = {"Violence", "Visually Disturbing"}
@@ -93,6 +99,19 @@ def _normalize_for_rekognition(file_bytes: bytes) -> bytes:
         image = Image.open(io.BytesIO(file_bytes))
         if image.mode != "RGB":
             image = image.convert("RGB")
+
+        # Comic dạng long-strip/webtoon (cuộn dọc, cao gấp nhiều lần chiều rộng)
+        # thường vượt giới hạn cạnh dài nhất 10000px của Rekognition
+        # (ImageTooLargeException, gặp thật với ảnh 720x10825). Giảm tỉ lệ theo
+        # đúng aspect ratio trước khi gửi — moderation chỉ cần nhận diện nội
+        # dung, không cần độ phân giải gốc.
+        if max(image.size) > _REKOGNITION_MAX_DIMENSION:
+            image.thumbnail(
+                (_REKOGNITION_MAX_DIMENSION, _REKOGNITION_MAX_DIMENSION),
+                Image.LANCZOS,
+            )
+            logger.info(f"Resized oversized image to {image.size} before Rekognition call")
+
         buffer = io.BytesIO()
         image.save(buffer, format="JPEG", quality=90)
         return buffer.getvalue()
