@@ -19,12 +19,19 @@ from PIL import Image
 from app.core.config import settings
 
 
-def extract_frames_from_video(file_bytes: bytes) -> list[dict]:
+def extract_frames_from_video(
+    file_bytes: bytes,
+    fps: int = settings.FINGERPRINT_FPS,
+    max_frames: int = settings.FINGERPRINT_MAX_FRAMES,
+) -> list[dict]:
     """
     Trích xuất frames từ video.
 
     Args:
         file_bytes: Nội dung file video (bytes).
+        fps: Số frame/giây. Pipeline chính (process_fingerprint) truyền giá trị động đọc từ
+            DB; watermark fallback dùng default static config.py — giữ nguyên hành vi cũ.
+        max_frames: Tổng số frame tối đa. Xem ghi chú fps.
 
     Returns:
         List of { "timestamp": float, "image": PIL.Image }
@@ -48,9 +55,9 @@ def extract_frames_from_video(file_bytes: bytes) -> list[dict]:
         # Video dài hơn FINGERPRINT_MAX_FRAMES giây (ở FPS mặc định) thì giảm fps hiệu
         # quả để rải đều frame khắp video thay vì chỉ lấy được đoạn đầu — giữ đúng hành
         # vi cũ cho video ngắn (fps = FINGERPRINT_FPS), chỉ giảm khi thật sự cần.
-        effective_fps = settings.FINGERPRINT_FPS
-        if duration * effective_fps > settings.FINGERPRINT_MAX_FRAMES:
-            effective_fps = settings.FINGERPRINT_MAX_FRAMES / duration
+        effective_fps = fps
+        if duration * effective_fps > max_frames:
+            effective_fps = max_frames / duration
 
         logger.info(f"Extractor: video duration={duration:.1f}s, fps={effective_fps:.4f}")
 
@@ -63,7 +70,7 @@ def extract_frames_from_video(file_bytes: bytes) -> list[dict]:
             "ffmpeg",
             "-i", tmp_path,
             "-vf", f"fps={effective_fps}",
-            "-frames:v", str(settings.FINGERPRINT_MAX_FRAMES),
+            "-frames:v", str(max_frames),
             "-f", "image2pipe",
             "-vcodec", "png",
             "-loglevel", "error",

@@ -34,7 +34,14 @@ class ClusterResolution:
 
 
 def resolve_content_cluster(
-    vectors: list[bytes], creator_id: str, is_video: bool
+    vectors: list[bytes],
+    creator_id: str,
+    is_video: bool,
+    cluster_threshold: float = settings.FINGERPRINT_CLUSTER_THRESHOLD,
+    image_top_k: int = settings.FINGERPRINT_IMAGE_TOP_K,
+    video_top_k: int = settings.FINGERPRINT_VIDEO_TOP_K,
+    min_match_seconds: int = settings.FINGERPRINT_MIN_MATCH_SECONDS,
+    fps: int = settings.FINGERPRINT_FPS,
 ) -> ClusterResolution:
     """
     Xác định cụm nội dung + chủ sở hữu gốc cho 1 upload mới.
@@ -47,6 +54,11 @@ def resolve_content_cluster(
         vectors: Fingerprint vectors của upload (1 vector cho ảnh, nhiều cho video).
         creator_id: Creator đang thực hiện upload — chủ sở hữu MẶC ĐỊNH nếu là cụm mới.
         is_video: True → dùng thuật toán tổng hợp nhiều frame; False → ảnh (1 vector).
+        cluster_threshold: Ngưỡng gán cụm. Pipeline chính (process_fingerprint) truyền giá
+            trị động đọc từ DB; các fallback tra cứu chủ sở hữu (watermark) dùng default
+            static từ config.py — giữ nguyên hành vi cũ, không cần đọc DB.
+        image_top_k, video_top_k, min_match_seconds, fps: cùng cơ chế — pipeline truyền động,
+            watermark fallback dùng default static.
 
     Returns:
         ClusterResolution — matched=True nếu khớp cụm cũ, False nếu tự mint cụm mới. Caller
@@ -59,14 +71,14 @@ def resolve_content_cluster(
     # top_k video dùng chung FINGERPRINT_VIDEO_TOP_K với _find_violations() — cùng rủi ro
     # bị fingerprint cũ (media đã xóa nhưng vector giữ mãi) chiếm hết suất top_k, đẩy văng
     # cụm/chủ sở hữu thật ra ngoài kết quả (xem config.py FINGERPRINT_VIDEO_TOP_K).
-    top_k = settings.FINGERPRINT_IMAGE_TOP_K if not is_video else settings.FINGERPRINT_VIDEO_TOP_K
+    top_k = image_top_k if not is_video else video_top_k
     # KHÔNG loại trừ creator hiện tại — xem docstring module.
     raw_matches = search_similar(vectors, top_k=top_k, exclude_creator_id=None)
 
     candidates = [
         m
         for m in raw_matches
-        if m["score"] >= settings.FINGERPRINT_CLUSTER_THRESHOLD
+        if m["score"] >= cluster_threshold
         and not m["is_violation"]
         and m["content_cluster_id"]
     ]
@@ -75,7 +87,7 @@ def resolve_content_cluster(
         return _mint_new_cluster(creator_id)
 
     if is_video:
-        chosen = _pick_cluster_by_coverage(candidates)
+        chosen = _pick_cluster_by_coverage(candidates, min_match_seconds, fps)
         if chosen is None:
             return _mint_new_cluster(creator_id)
     else:
@@ -127,20 +139,24 @@ def _mint_new_cluster(creator_id: str) -> ClusterResolution:
     )
 
 
-def _pick_cluster_by_coverage(candidates: list[dict]) -> dict | None:
+def _pick_cluster_by_coverage(
+    candidates: list[dict], min_match_seconds: int, fps: int
+) -> dict | None:
     """
     Video: gom candidate theo content_cluster_id, chọn cụm có nhiều query frame khớp nhất
-    (coverage). Yêu cầu tối thiểu FINGERPRINT_MIN_MATCH_SECONDS (quy đổi theo FPS thành số
-    frame) khớp mới coi là "cùng nội dung" — tránh 1-2 frame trùng ngẫu nhiên (ví dụ màu nền
-    giống nhau) bị coi là cùng cụm với cả video. Đây chỉ là gate xác định CỤM/chủ sở hữu —
-    việc tính đoạn vi phạm thật (segment) vẫn do match_segments() ở matcher.py đảm nhiệm
-    (Phase 03), không trùng lặp logic.
+    (coverage). Yêu cầu tối thiểu min_match_seconds (quy đổi theo fps thành số frame) khớp
+    mới coi là "cùng nội dung" — tránh 1-2 frame trùng ngẫu nhiên (ví dụ màu nền giống nhau)
+    bị coi là cùng cụm với cả video. Đây chỉ là gate xác định CỤM/chủ sở hữu — việc tính đoạn
+    vi phạm thật (segment) vẫn do match_segments() ở matcher.py đảm nhiệm, không trùng logic.
+
+    min_match_seconds/fps đọc động 1 lần/job ở process_fingerprint, truyền xuống qua
+    resolve_content_cluster (KHÔNG đọc settings trực tiếp ở đây).
     """
     by_cluster: dict[str, list[dict]] = {}
     for c in candidates:
         by_cluster.setdefault(c["content_cluster_id"], []).append(c)
 
-    min_frames_required = max(1, round(settings.FINGERPRINT_MIN_MATCH_SECONDS * settings.FINGERPRINT_FPS))
+    min_frames_required = max(1, round(min_match_seconds * fps))
 
     # coverage = số QUERY FRAME riêng biệt khớp (không phải số candidate — 1 frame có thể
     # khớp nhiều kết quả top_k cùng 1 cụm, chỉ tính 1 lần).

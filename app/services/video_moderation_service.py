@@ -18,7 +18,7 @@ from datetime import datetime
 from loguru import logger
 from PIL import Image
 from app.aws.rekognition_client import detect_moderation_labels
-from app.core.config import settings
+from app.core.dynamic_config import get_ai_pipeline_config
 
 # Cố tình hạ concurrency xuống 2 và thêm sleep để tránh lỗi ProvisionedThroughputExceededException
 _REKOGNITION_MAX_CONCURRENCY = 2
@@ -34,21 +34,26 @@ _REKOGNITION_MAX_DIMENSION = 9900
 _LOWER_THRESHOLD_CATEGORIES = {"Violence", "Visually Disturbing"}
 
 
-def _threshold_for_label(label: dict) -> float:
+def _threshold_for_label(label: dict, config: dict) -> float:
+    # config đọc 1 lần/job ở moderate_media (dynamic_config) rồi truyền xuống — KHÔNG
+    # gọi get_ai_pipeline_config() ở đây vì hàm này chạy per-label (hàng chục lần/job).
     # parent_name rỗng khi label CHÍNH LÀ danh mục gốc (L1, vd trả thẳng "Violence" không
     # qua label con) — phải tự kiểm cả label["name"] trong trường hợp đó, không chỉ parent_name.
     if label.get("parent_name") in _LOWER_THRESHOLD_CATEGORIES or label.get("name") in _LOWER_THRESHOLD_CATEGORIES:
-        return settings.REKOGNITION_VIOLENCE_CONFIDENCE_THRESHOLD
-    return settings.REKOGNITION_CONFIDENCE_THRESHOLD
+        return config["rekognition_violence_confidence_threshold"]
+    return config["rekognition_confidence_threshold"]
 
 
 def moderate_media(file_bytes: bytes, media_type: str, media_id: str, correlation_id: str) -> dict:
     """Run content moderation. Returns camelCase dict for Kafka."""
     try:
+        # Đọc ngưỡng động 1 LẦN/job rồi truyền xuống — Postgres lỗi/chưa có row thì
+        # dynamic_config tự fallback về default config.py (không raise, không crash).
+        config = get_ai_pipeline_config()
         if media_type == "IMAGE":
-            violations, raw_responses = _moderate_image(file_bytes)
+            violations, raw_responses = _moderate_image(file_bytes, config)
         else:
-            violations, raw_responses = _moderate_video(file_bytes)
+            violations, raw_responses = _moderate_video(file_bytes, config)
 
         is_safe = len(violations) == 0
         primary_label = None
@@ -120,12 +125,12 @@ def _normalize_for_rekognition(file_bytes: bytes) -> bytes:
         return file_bytes
 
 
-def _moderate_image(file_bytes: bytes) -> tuple[list[dict], list]:
+def _moderate_image(file_bytes: bytes, config: dict) -> tuple[list[dict], list]:
     """Single Rekognition call for image."""
     labels = detect_moderation_labels(_normalize_for_rekognition(file_bytes))
     violations = []
     for label in labels:
-        if label["confidence"] >= _threshold_for_label(label):
+        if label["confidence"] >= _threshold_for_label(label, config):
             violations.append({
                 "timestampMs": 0.0,
                 "endTimestampMs": 0.0,
@@ -137,9 +142,9 @@ def _moderate_image(file_bytes: bytes) -> tuple[list[dict], list]:
     return violations, labels
 
 
-def _moderate_video(file_bytes: bytes) -> tuple[list[dict], list]:
+def _moderate_video(file_bytes: bytes, config: dict) -> tuple[list[dict], list]:
     """Extract frames, call Rekognition on each IN PARALLEL, aggregate results."""
-    frames = _extract_moderation_frames(file_bytes)
+    frames = _extract_moderation_frames(file_bytes, config)
     logger.info(f"Extracted {len(frames)} frames for moderation")
 
     all_raw: list[dict | None] = [None] * len(frames)
@@ -159,10 +164,10 @@ def _moderate_video(file_bytes: bytes) -> tuple[list[dict], list]:
             index, timestamp_sec, labels = future.result()
             all_raw[index] = {"timestamp": timestamp_sec, "labels": labels}
             for label in labels:
-                if label["confidence"] >= _threshold_for_label(label):
+                if label["confidence"] >= _threshold_for_label(label, config):
                     all_violations.append({
                         "timestampMs": timestamp_sec * 1000,
-                        "endTimestampMs": (timestamp_sec + settings.MODERATION_FRAME_INTERVAL) * 1000,
+                        "endTimestampMs": (timestamp_sec + config["moderation_frame_interval"]) * 1000,
                         "label": label["name"],
                         "parentLabel": label["parent_name"],
                         "confidence": label["confidence"],
@@ -172,11 +177,15 @@ def _moderate_video(file_bytes: bytes) -> tuple[list[dict], list]:
     return all_violations, all_raw
 
 
-def _extract_moderation_frames(video_bytes: bytes) -> list[tuple[float, bytes]]:
-    """Extract up to REKOGNITION_MAX_FRAMES frames in a SINGLE ffmpeg pass
-    (previously spawned 1 ffmpeg process per frame — 30x process/seek overhead)."""
-    base_interval = settings.MODERATION_FRAME_INTERVAL
-    max_frames = settings.REKOGNITION_MAX_FRAMES
+def _extract_moderation_frames(
+    video_bytes: bytes, config: dict
+) -> list[tuple[float, bytes]]:
+    """Extract up to rekognition_max_frames frames in a SINGLE ffmpeg pass
+    (previously spawned 1 ffmpeg process per frame — 30x process/seek overhead).
+
+    config đọc động 1 lần/job ở moderate_media, truyền xuống (KHÔNG đọc settings ở đây)."""
+    base_interval = config["moderation_frame_interval"]
+    max_frames = config["rekognition_max_frames"]
 
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
         tmp.write(video_bytes)

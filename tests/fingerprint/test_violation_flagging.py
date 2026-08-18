@@ -14,7 +14,7 @@ def test_t2_clone_gets_flagged(hit_factory):
     hits = [hit_factory(media_id="a_original", creator_id="creatorA", score=0.95,
                          original_creator_id="creatorA", is_violation=False)]
 
-    violations = match_image_violation(hits, uploader_creator_id="creatorB")
+    violations = match_image_violation(hits, similarity_threshold=0.90, uploader_creator_id="creatorB")
 
     assert len(violations) == 1
     assert violations[0]["source_media_id"] == "a_original"
@@ -26,7 +26,7 @@ def test_t3_owner_reupload_not_flagged_reported_bug(hit_factory):
     hits = [hit_factory(media_id="b_clone", creator_id="creatorB", score=0.95,
                          original_creator_id="creatorA", is_violation=True)]
 
-    violations = match_image_violation(hits, uploader_creator_id="creatorA")
+    violations = match_image_violation(hits, similarity_threshold=0.90, uploader_creator_id="creatorA")
 
     assert violations == []
 
@@ -42,7 +42,7 @@ def test_t4_repeated_owner_reupload_stays_clean(hit_factory):
     ]
 
     for _ in range(3):
-        violations = match_image_violation(hits, uploader_creator_id="creatorA")
+        violations = match_image_violation(hits, similarity_threshold=0.90, uploader_creator_id="creatorA")
         assert violations == []
 
 
@@ -57,12 +57,20 @@ def test_t7_video_partial_span_copy_flagged(hit_factory):
     ]
 
     # B upload đoạn giống — phải bị flag toàn bộ span 10 giây.
-    violations_b = match_segments(query_fingerprints, hits, uploader_creator_id="creatorB")
+    violations_b = match_segments(
+        query_fingerprints, hits,
+        similarity_threshold=0.90, min_match_seconds=5, max_gap_seconds=2, fps=1,
+        uploader_creator_id="creatorB",
+    )
     assert len(violations_b) == 1
     assert violations_b[0]["source_media_id"] == "a_original"
 
     # A re-upload lại chính nó — không bị flag gì (chủ sở hữu của chính source đó).
-    violations_a = match_segments(query_fingerprints, hits, uploader_creator_id="creatorA")
+    violations_a = match_segments(
+        query_fingerprints, hits,
+        similarity_threshold=0.90, min_match_seconds=5, max_gap_seconds=2, fps=1,
+        uploader_creator_id="creatorA",
+    )
     assert violations_a == []
 
 
@@ -85,7 +93,9 @@ def test_t8_derivative_flags_only_foreign_owned_portion(hit_factory):
     ]
 
     violations = match_segments(
-        query_fingerprints, own_hits + foreign_hits, uploader_creator_id="creatorA"
+        query_fingerprints, own_hits + foreign_hits,
+        similarity_threshold=0.90, min_match_seconds=5, max_gap_seconds=2, fps=1,
+        uploader_creator_id="creatorA",
     )
 
     assert len(violations) == 1

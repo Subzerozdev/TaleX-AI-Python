@@ -14,12 +14,14 @@ from collections import defaultdict
 
 from loguru import logger
 
-from app.core.config import settings
-
 
 def match_segments(
     query_fingerprints: list[dict],
     search_results: list[dict],
+    similarity_threshold: float,
+    min_match_seconds: int,
+    max_gap_seconds: int,
+    fps: int,
     exclude_media_id: int | None = None,
     exclude_creator_id: str | None = None,
     uploader_creator_id: str | None = None,
@@ -57,9 +59,10 @@ def match_segments(
             "violation_type": "VIDEO"
         }
     """
-    threshold = settings.FINGERPRINT_SIMILARITY_THRESHOLD
-    min_seconds = settings.FINGERPRINT_MIN_MATCH_SECONDS
-    max_gap = settings.FINGERPRINT_MAX_GAP_SECONDS
+    # Các tham số đọc động 1 lần/job ở process_fingerprint rồi truyền xuống (KHÔNG đọc settings).
+    threshold = similarity_threshold
+    min_seconds = min_match_seconds
+    max_gap = max_gap_seconds
 
     # Bước 1: Lọc matches theo threshold + exclude
     matches_by_source = defaultdict(list)
@@ -105,7 +108,7 @@ def match_segments(
         # Dung sai float-dust = nửa chu kỳ 1 frame (1/FPS), thay vì hằng số cố định — ở
         # FPS mặc định (1) ra đúng 0.5 giống trước, nhưng còn đúng nếu FPS đổi (chu kỳ dài
         # hơn/ngắn hơn 1s thì dung sai cũng co giãn theo).
-        tolerance = 0.5 / max(settings.FINGERPRINT_FPS, 1)
+        tolerance = 0.5 / max(fps, 1)
         merged = _merge_consecutive(matches, max_gap, tolerance)
 
         for seg in merged:
@@ -129,6 +132,7 @@ def match_segments(
 
 def match_image_violation(
     search_results: list[dict],
+    similarity_threshold: float,
     exclude_media_id: str | None = None,
     exclude_creator_id: str | None = None,
     uploader_creator_id: str | None = None,
@@ -151,7 +155,8 @@ def match_image_violation(
     Returns:
         List of segment dict giống match_segments(), violation_type="IMAGE".
     """
-    threshold = settings.FINGERPRINT_SIMILARITY_THRESHOLD
+    # similarity_threshold đọc động 1 lần/job ở process_fingerprint rồi truyền xuống.
+    threshold = similarity_threshold
 
     violations = []
     seen_media_ids = set()

@@ -18,6 +18,7 @@ import threading
 from loguru import logger
 
 from app.core.config import settings
+from app.core.dynamic_config import get_ai_pipeline_config
 from app.fingerprint.content_ownership import resolve_content_cluster
 from app.fingerprint.extractor import extract_frames_from_video, extract_image
 from app.fingerprint.hasher import hash_frames, hash_image, VECTOR_DIM
@@ -41,8 +42,12 @@ VIDEO_EXTENSIONS = {".mp4", ".avi", ".mkv", ".mov", ".webm", ".flv"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".jfif"}
 ALLOWED_EXTENSIONS = VIDEO_EXTENSIONS | IMAGE_EXTENSIONS
 
-# Max file size (bytes) — nguồn sự thật duy nhất, dùng chung cho cả _validate_file() và
-# cap tải S3 (kafka_consumer_service.py) để tránh lệch cấu hình giữa 2 chỗ.
+# Trần an toàn TĨNH cho cap tải S3 (kafka_consumer_service.py) — chặn NGAY tại HeadObject
+# trước khi .read() cả file vào RAM, tránh OOM khi 1 object quá khổ x nhiều job song song.
+# Đây là trần bảo vệ hạ tầng (đọc từ env lúc khởi động), KHÁC với ngưỡng NGHIỆP VỤ động
+# mà Admin chỉnh (fingerprint_max_file_size_mb) — ngưỡng động được _validate_file() thực thi
+# per-job sau khi đã tải về. Admin hạ ngưỡng → file vẫn tải nhưng bị _validate_file loại;
+# nếu Admin muốn NÂNG trần vượt giá trị này, phải chỉnh cả env FINGERPRINT_MAX_FILE_SIZE_MB.
 MAX_FILE_SIZE = settings.FINGERPRINT_MAX_FILE_SIZE_MB * 1024 * 1024
 
 
@@ -95,8 +100,13 @@ def process_fingerprint(
     if not is_connected():
         raise RuntimeError("Milvus chưa sẵn sàng.")
 
-    # Validate file
-    _validate_file(file_bytes, filename)
+    # Đọc cấu hình động 1 LẦN/job (trước validate, để dùng luôn ngưỡng dung lượng động).
+    # Truyền xuống mọi bước bên dưới; KHÔNG gọi lại trong loop/hàm con. Postgres lỗi/chưa
+    # có row → dynamic_config fallback default, không raise.
+    ai_config = get_ai_pipeline_config()
+
+    # Validate file (dùng ngưỡng dung lượng động của job này)
+    _validate_file(file_bytes, filename, ai_config["fingerprint_max_file_size_mb"])
 
     # Nhận số generation MỚI NHẤT cho media_id này — nếu 1 lần gọi khác (retry) nhận số
     # mới hơn trước khi lần này kịp ghi, lần này coi là "cũ" và bỏ qua ghi (xem StaleJobError).
@@ -108,7 +118,11 @@ def process_fingerprint(
 
     # Tạo fingerprints
     if is_video:
-        fingerprints = _process_video(file_bytes)
+        fingerprints = _process_video(
+            file_bytes,
+            fps=ai_config["fingerprint_fps"],
+            max_frames=ai_config["fingerprint_max_frames"],
+        )
     else:
         fingerprints = _process_image(file_bytes)
 
@@ -121,7 +135,16 @@ def process_fingerprint(
     # (is_violation=False) trong cụm, xóa trước rồi mới resolve sẽ khiến chủ gốc "biến mất"
     # khỏi Milvus đúng lúc tự tra cứu — làm mất quyền sở hữu của chính mình một cách oan uổng.
     vectors = [fp["vector"] for fp in fingerprints]
-    cluster = resolve_content_cluster(vectors, creator_id=creator_id, is_video=is_video)
+    cluster = resolve_content_cluster(
+        vectors,
+        creator_id=creator_id,
+        is_video=is_video,
+        cluster_threshold=ai_config["fingerprint_cluster_threshold"],
+        image_top_k=ai_config["fingerprint_image_top_k"],
+        video_top_k=ai_config["fingerprint_video_top_k"],
+        min_match_seconds=ai_config["fingerprint_min_match_seconds"],
+        fps=ai_config["fingerprint_fps"],
+    )
     is_owner = cluster.matched and cluster.original_creator_id == creator_id
 
     # Xóa fingerprint cũ nếu media_id đã tồn tại (upsert)
@@ -134,6 +157,7 @@ def process_fingerprint(
     # khác đã đăng bản sao trước đó.
     violations = _find_violations(
         fingerprints,
+        ai_config,
         exclude_media_id=media_id,
         exclude_creator_id=creator_id,
         is_video=is_video,
@@ -223,14 +247,15 @@ def delete_fingerprint(media_id: str) -> DeleteResponse:
     )
 
 
-def _validate_file(file_bytes: bytes, filename: str) -> None:
-    """Validate file trước khi xử lý."""
+def _validate_file(file_bytes: bytes, filename: str, max_file_size_mb: int) -> None:
+    """Validate file trước khi xử lý. max_file_size_mb đọc động 1 lần/job, truyền xuống."""
     if len(file_bytes) == 0:
         raise ValueError("File rỗng.")
 
-    if len(file_bytes) > MAX_FILE_SIZE:
+    max_bytes = max_file_size_mb * 1024 * 1024
+    if len(file_bytes) > max_bytes:
         size_mb = len(file_bytes) / (1024 * 1024)
-        raise ValueError(f"File quá lớn ({size_mb:.1f}MB). Giới hạn: {MAX_FILE_SIZE // (1024*1024)}MB.")
+        raise ValueError(f"File quá lớn ({size_mb:.1f}MB). Giới hạn: {max_file_size_mb}MB.")
 
     ext = _get_extension(filename)
     if ext not in ALLOWED_EXTENSIONS:
@@ -242,9 +267,9 @@ def _get_extension(filename: str) -> str:
     return "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
 
-def _process_video(file_bytes: bytes) -> list[dict]:
-    """Video → frames → vectors."""
-    frames = extract_frames_from_video(file_bytes)
+def _process_video(file_bytes: bytes, fps: int, max_frames: int) -> list[dict]:
+    """Video → frames → vectors. fps/max_frames đọc động 1 lần/job, truyền xuống."""
+    frames = extract_frames_from_video(file_bytes, fps=fps, max_frames=max_frames)
     if not frames:
         raise ValueError("Không thể trích xuất frames từ video. File có thể bị hỏng.")
     return hash_frames(frames)
@@ -259,6 +284,7 @@ def _process_image(file_bytes: bytes) -> list[dict]:
 
 def _find_violations(
     fingerprints: list[dict],
+    ai_config: dict,
     exclude_media_id: str,
     exclude_creator_id: str = "",
     is_video: bool = True,
@@ -267,10 +293,13 @@ def _find_violations(
     """
     Tìm vi phạm trong Milvus (loại trừ cùng creator — xem match_segments/match_image_violation).
 
+    ai_config: dict cấu hình động đọc 1 lần/job ở process_fingerprint (top_k, ngưỡng, min/max
+    match, fps) — KHÔNG đọc settings trực tiếp ở đây.
+
     is_video quyết định cách so khớp: video nối nhiều điểm liên tiếp thành đoạn (phải dài
-    tối thiểu FINGERPRINT_MIN_MATCH_SECONDS), ảnh chỉ có 1 điểm fingerprint duy nhất nên so
-    khớp trực tiếp theo threshold — dùng chung match_segments() cho ảnh sẽ luôn ra duration=0,
-    bị loại oan dù giống 100% (đã gặp thật, xem match_image_violation docstring).
+    tối thiểu min_match_seconds), ảnh chỉ có 1 điểm fingerprint duy nhất nên so khớp trực tiếp
+    theo threshold — dùng chung match_segments() cho ảnh sẽ luôn ra duration=0, bị loại oan
+    dù giống 100% (đã gặp thật, xem match_image_violation docstring).
 
     uploader_creator_id: xem docstring match_segments()/match_image_violation() — bỏ qua
         match mà uploader chính là chủ sở hữu gốc (original_creator_id) của cụm nguồn.
@@ -286,7 +315,11 @@ def _find_violations(
     # top_k video trước đây cố định =3 (xem config.py FINGERPRINT_VIDEO_TOP_K cho lý do
     # tăng lên) — cùng rủi ro với ảnh: fingerprint cũ (media đã xóa nhưng vector giữ mãi)
     # có thể chiếm hết suất top_k, đẩy nguồn thật đang sống ra ngoài kết quả.
-    top_k = settings.FINGERPRINT_VIDEO_TOP_K if is_video else settings.FINGERPRINT_IMAGE_TOP_K
+    top_k = (
+        ai_config["fingerprint_video_top_k"]
+        if is_video
+        else ai_config["fingerprint_image_top_k"]
+    )
     search_results = search_similar(vectors, top_k=top_k, exclude_creator_id=exclude_creator_id or None)
 
     if not search_results:
@@ -296,6 +329,10 @@ def _find_violations(
         return match_segments(
             query_fingerprints=fingerprints,
             search_results=search_results,
+            similarity_threshold=ai_config["fingerprint_similarity_threshold"],
+            min_match_seconds=ai_config["fingerprint_min_match_seconds"],
+            max_gap_seconds=ai_config["fingerprint_max_gap_seconds"],
+            fps=ai_config["fingerprint_fps"],
             exclude_media_id=exclude_media_id,
             exclude_creator_id=exclude_creator_id,
             uploader_creator_id=uploader_creator_id,
@@ -303,6 +340,7 @@ def _find_violations(
 
     return match_image_violation(
         search_results=search_results,
+        similarity_threshold=ai_config["fingerprint_similarity_threshold"],
         exclude_media_id=exclude_media_id,
         exclude_creator_id=exclude_creator_id,
         uploader_creator_id=uploader_creator_id,
