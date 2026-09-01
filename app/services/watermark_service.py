@@ -290,8 +290,8 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
             # Output 1: Version A (Có watermark)
             "-map", "[v_wm]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", "veryfast",
-            "-force_key_frames", "expr:gte(t,prev_forced_t+2)",
-            "-g", "60", "-keyint_min", "60", "-sc_threshold", "0",
+            "-force_key_frames", "expr:gte(t,n_forced*2)",
+            "-g", "60", "-sc_threshold", "0",
             "-c:a", "aac", "-b:a", "128k",
             "-hls_time", "2", "-hls_playlist_type", "vod",
             "-hls_list_size", "0",
@@ -301,8 +301,8 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
             # Output 2: Version B (Clean)
             "-map", "[v_clean]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", "veryfast",
-            "-force_key_frames", "expr:gte(t,prev_forced_t+2)",
-            "-g", "60", "-keyint_min", "60", "-sc_threshold", "0",
+            "-force_key_frames", "expr:gte(t,n_forced*2)",
+            "-g", "60", "-sc_threshold", "0",
             "-c:a", "aac", "-b:a", "128k",
             "-hls_time", "2", "-hls_playlist_type", "vod",
             "-hls_list_size", "0",
