@@ -219,11 +219,12 @@ def embed_video_audio_watermark(video_bytes: bytes, creator_id: str) -> bytes:
                 "-c:v", "copy", "-c:a", "aac", "-b:a", "192k"
             ])
         else:
-            if video_duration:
-                cmd.extend(["-t", str(video_duration)])
+            # Nếu video không có tiếng gốc: pad silence cho audio watermark để kéo dài hết video
             cmd.extend([
-                "-map", "0:v", "-map", "1:a",
-                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k"
+                "-filter_complex", "[1:a]apad[a]",
+                "-map", "0:v", "-map", "[a]",
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+                "-shortest"
             ])
             
         cmd.extend(["-loglevel", "error", tmp_video_out.name])
@@ -281,7 +282,7 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
         # 2. [v_mark_in] đi qua drawbox vẽ marker magenta 8x8px tạo ra [v_wm]
         # 3. [v_wm] + audio được encode HLS vào dir_a (Version A)
         # 4. [v_clean] + audio được encode HLS vào dir_b (Version B)
-        # 5. Dùng preset veryfast và threads 4 để tối ưu tốc độ CPU
+        # 5. Dùng prev_forced_t+2 để từng luồng độc lập tự ép keyframe chính xác mỗi 2s mà không xung đột biến n_forced
         cmd = [
             ffmpeg_bin, "-y", "-i", tmp_video_in.name,
             "-filter_complex", "[0:v]split=2[v_clean][v_mark_in];[v_mark_in]drawbox=x=iw-20:y=20:w=8:h=8:color=magenta@1.0:t=fill[v_wm]",
@@ -289,8 +290,8 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
             # Output 1: Version A (Có watermark)
             "-map", "[v_wm]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", "veryfast",
-            "-force_key_frames", "expr:gte(t,n_forced*2)",
-            "-g", "60", "-sc_threshold", "0",
+            "-force_key_frames", "expr:gte(t,prev_forced_t+2)",
+            "-g", "60", "-keyint_min", "60", "-sc_threshold", "0",
             "-c:a", "aac", "-b:a", "128k",
             "-hls_time", "2", "-hls_playlist_type", "vod",
             "-hls_list_size", "0",
@@ -300,8 +301,8 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
             # Output 2: Version B (Clean)
             "-map", "[v_clean]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", "veryfast",
-            "-force_key_frames", "expr:gte(t,n_forced*2)",
-            "-g", "60", "-sc_threshold", "0",
+            "-force_key_frames", "expr:gte(t,prev_forced_t+2)",
+            "-g", "60", "-keyint_min", "60", "-sc_threshold", "0",
             "-c:a", "aac", "-b:a", "128k",
             "-hls_time", "2", "-hls_playlist_type", "vod",
             "-hls_list_size", "0",
