@@ -1,11 +1,7 @@
 """
 Extractor — Trích xuất frames từ video và đọc ảnh.
-
 Video: FFmpeg đọc file → cắt 1 frame mỗi giây → trả list PIL Image.
 Ảnh: Pillow đọc file → trả 1 PIL Image.
-
-Tạm thời đọc file upload trực tiếp.
-Sau này đổi sang S3 URL → chỉ sửa file này.
 """
 
 import subprocess
@@ -24,24 +20,7 @@ def extract_frames_from_video(
     fps: int = settings.FINGERPRINT_FPS,
     max_frames: int = settings.FINGERPRINT_MAX_FRAMES,
 ) -> list[dict]:
-    """
-    Trích xuất frames từ video.
-
-    Args:
-        file_bytes: Nội dung file video (bytes).
-        fps: Số frame/giây. Pipeline chính (process_fingerprint) truyền giá trị động đọc từ
-            DB; watermark fallback dùng default static config.py — giữ nguyên hành vi cũ.
-        max_frames: Tổng số frame tối đa. Xem ghi chú fps.
-
-    Returns:
-        List of { "timestamp": float, "image": PIL.Image }
-        Mỗi item = 1 frame tại 1 giây cụ thể.
-
-    Ví dụ: video 10 giây → 10 items, timestamp 0.0 → 9.0
-    """
     frames = []
-
-    # Lưu bytes vào file tạm (FFmpeg cần đọc từ file)
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
         tmp.write(file_bytes)
         tmp_path = tmp.name
@@ -50,22 +29,12 @@ def extract_frames_from_video(
         # Lấy duration của video
         duration = _get_video_duration(tmp_path)
         if duration <= 0:
-            raise ValueError("Không thể xác định độ dài video.")
-
-        # Video dài hơn FINGERPRINT_MAX_FRAMES giây (ở FPS mặc định) thì giảm fps hiệu
-        # quả để rải đều frame khắp video thay vì chỉ lấy được đoạn đầu — giữ đúng hành
-        # vi cũ cho video ngắn (fps = FINGERPRINT_FPS), chỉ giảm khi thật sự cần.
+            raise ValueError("Unable to determine video duration..")
         effective_fps = fps
         if duration * effective_fps > max_frames:
             effective_fps = max_frames / duration
 
         logger.info(f"Extractor: video duration={duration:.1f}s, fps={effective_fps:.4f}")
-
-        # Trích xuất frames bằng FFmpeg
-        # -vf fps=X: lấy X frame mỗi giây (đã điều chỉnh để không vượt quá cap)
-        # -frames:v: chốt cứng tổng số frame, phòng trường hợp làm tròn fps vẫn dư 1-2 frame
-        # -f image2pipe: output ra pipe (stdout) dạng ảnh
-        # -vcodec png: format PNG
         cmd = [
             "ffmpeg",
             "-i", tmp_path,
@@ -83,7 +52,6 @@ def extract_frames_from_video(
             error_msg = result.stderr.decode("utf-8", errors="replace")
             raise RuntimeError(f"FFmpeg error: {error_msg[:200]}")
 
-        # Parse output: FFmpeg ghi nhiều PNG liên tiếp vào stdout
         raw_data = result.stdout
         frames = _parse_png_stream(raw_data, effective_fps)
 
@@ -97,22 +65,12 @@ def extract_frames_from_video(
 
 
 def extract_image(file_bytes: bytes) -> Image.Image:
-    """
-    Đọc ảnh từ bytes.
-
-    Args:
-        file_bytes: Nội dung file ảnh (bytes).
-
-    Returns:
-        PIL.Image object.
-    """
     image = Image.open(BytesIO(file_bytes)).convert("RGB")
     logger.info(f"Extractor: image size={image.size}")
     return image
 
 
 def _get_video_duration(file_path: str) -> float:
-    """Lấy duration (giây) của video bằng ffprobe."""
     cmd = [
         "ffprobe",
         "-v", "error",
@@ -132,19 +90,6 @@ def _get_video_duration(file_path: str) -> float:
 
 
 def _parse_png_stream(raw_data: bytes, fps: float) -> list[dict]:
-    """
-    Parse chuỗi PNG liên tiếp từ FFmpeg stdout.
-
-    FFmpeg ghi nhiều file PNG nối nhau vào stdout.
-    Mỗi PNG bắt đầu bằng PNG header: b'\\x89PNG'
-
-    Args:
-        fps: fps THẬT SỰ dùng khi trích xuất (có thể đã giảm so với
-            settings.FINGERPRINT_FPS nếu video dài — xem extract_frames_from_video) —
-            dùng để tính đúng timestamp, trước đây hàm này nhận `duration` nhưng
-            không hề dùng tới, luôn tính timestamp theo settings.FINGERPRINT_FPS gốc,
-            sai lệch nếu fps đã bị điều chỉnh.
-    """
     frames = []
     png_header = b"\x89PNG"
 
@@ -174,7 +119,6 @@ def _parse_png_stream(raw_data: bytes, fps: float) -> list[dict]:
 
 
 def is_ffmpeg_available() -> bool:
-    """Kiểm tra FFmpeg có sẵn không — dùng cho health check."""
     try:
         result = subprocess.run(
             ["ffmpeg", "-version"],

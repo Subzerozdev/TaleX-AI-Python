@@ -7,13 +7,6 @@ from app.core.config import settings
 
 _s3_client = None
 
-# asyncio.wait_for(timeout=60s) bọc quanh mỗi job (kafka_consumer_service.py) chỉ hủy
-# việc CHỜ — không ép dừng được thread thật đang chạy lời gọi boto3 bên dưới. Mặc định
-# boto3 là connect_timeout=60s + read_timeout=60s MỖI request, cộng thêm vài lần retry
-# tự động, nên 1 request thật sự bị treo có thể chạy ngầm nhiều phút sau khi job đã
-# "timeout" ở tầng trên — nhiều job dồn lại kiểu này có thể chiếm hết thread pool mặc
-# định (dùng chung cho MỌI asyncio.to_thread trong app). Set timeout ngắn hơn ở đây để
-# request tự bỏ cuộc nhanh, giảm thời gian thread bị "mắc kẹt".
 _BOTO_CONFIG = Config(connect_timeout=10, read_timeout=20, retries={"max_attempts": 2, "mode": "standard"})
 
 
@@ -38,9 +31,6 @@ def download_from_s3(s3_key: str, bucket: str = None, max_bytes: int | None = No
     if client is None:
         raise RuntimeError("S3 client not configured — check AWS credentials")
     if max_bytes is not None:
-        # Chặn TRƯỚC khi tải — .read() không giới hạn dung lượng có thể đọc cả file vài
-        # GB thẳng vào RAM; với nhiều job chạy song song (_JOB_SEMAPHORE), vài file lớn
-        # cùng lúc đủ để OOM cả service. HeadObject rẻ (chỉ lấy metadata, không tải body).
         head = client.head_object(Bucket=bucket, Key=s3_key)
         content_length = head.get("ContentLength")
         if content_length is not None and content_length > max_bytes:

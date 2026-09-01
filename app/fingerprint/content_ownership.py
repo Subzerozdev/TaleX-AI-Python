@@ -1,19 +1,4 @@
-"""
-Ownership — Sổ đăng ký chủ sở hữu nội dung gốc (content-ownership registry).
 
-Xác định 2 việc:
-  1. resolve_content_cluster(): upload mới này thuộc cụm nội dung nào đã có trong hệ thống
-     (nếu có), và ai là chủ sở hữu gốc (original_creator_id) của cụm đó — theo nguyên tắc
-     "ai upload trước, người đó là chủ" (first-seen-wins).
-  2. get_cluster_owner(): tra lại chủ sở hữu của 1 cụm ĐÃ BIẾT content_cluster_id — dùng khi
-     process_fingerprint() cần xác nhận lại (fallback) từ các dòng còn lại trong Milvus.
-
-QUAN TRỌNG: search ở đây KHÔNG loại trừ creator hiện tại (khác _find_violations() ở
-fingerprint_service.py) — vì mục đích là "tìm đúng cụm nội dung", và nếu chủ gốc re-upload
-lại nội dung của chính mình thì upload đó PHẢI khớp lại với cụm cũ của chính họ. Đây chính là
-điểm khác biệt cốt lõi giải quyết bug: chủ gốc không bao giờ bị loại khỏi việc tự nhận diện
-cụm nội dung của chính mình, dù bao nhiêu bản sao của creator khác đang có trong Milvus.
-"""
 
 import time
 import uuid
@@ -25,13 +10,10 @@ from app.fingerprint.milvus_store import query_cluster_rows, search_similar
 
 @dataclass
 class ClusterResolution:
-    """Kết quả tra cứu cụm nội dung cho 1 upload/lần tra cứu."""
-
     matched: bool
     cluster_id: str
     original_creator_id: str
     first_seen_at: float
-
 
 def resolve_content_cluster(
     vectors: list[bytes],
@@ -43,36 +25,9 @@ def resolve_content_cluster(
     min_match_seconds: int = settings.FINGERPRINT_MIN_MATCH_SECONDS,
     fps: int = settings.FINGERPRINT_FPS,
 ) -> ClusterResolution:
-    """
-    Xác định cụm nội dung + chủ sở hữu gốc cho 1 upload mới.
-
-    Nếu khớp với cụm đã có → trả về cluster_id/original_creator_id/first_seen_at của cụm đó
-    (chủ gốc luôn được xác nhận lại đúng, bất kể bao nhiêu bản sao của creator khác đang có
-    trong Milvus). Nếu không khớp cụm nào → tạo cụm mới, chủ sở hữu = creator đang upload.
-
-    Args:
-        vectors: Fingerprint vectors của upload (1 vector cho ảnh, nhiều cho video).
-        creator_id: Creator đang thực hiện upload — chủ sở hữu MẶC ĐỊNH nếu là cụm mới.
-        is_video: True → dùng thuật toán tổng hợp nhiều frame; False → ảnh (1 vector).
-        cluster_threshold: Ngưỡng gán cụm. Pipeline chính (process_fingerprint) truyền giá
-            trị động đọc từ DB; các fallback tra cứu chủ sở hữu (watermark) dùng default
-            static từ config.py — giữ nguyên hành vi cũ, không cần đọc DB.
-        image_top_k, video_top_k, min_match_seconds, fps: cùng cơ chế — pipeline truyền động,
-            watermark fallback dùng default static.
-
-    Returns:
-        ClusterResolution — matched=True nếu khớp cụm cũ, False nếu tự mint cụm mới. Caller
-        (process_fingerprint) dùng cluster_id/original_creator_id/first_seen_at trong cả 2
-        trường hợp để insert; "matched" chỉ là cờ thông tin.
-    """
     if not vectors:
         return _mint_new_cluster(creator_id)
-
-    # top_k video dùng chung FINGERPRINT_VIDEO_TOP_K với _find_violations() — cùng rủi ro
-    # bị fingerprint cũ (media đã xóa nhưng vector giữ mãi) chiếm hết suất top_k, đẩy văng
-    # cụm/chủ sở hữu thật ra ngoài kết quả (xem config.py FINGERPRINT_VIDEO_TOP_K).
     top_k = image_top_k if not is_video else video_top_k
-    # KHÔNG loại trừ creator hiện tại — xem docstring module.
     raw_matches = search_similar(vectors, top_k=top_k, exclude_creator_id=None)
 
     candidates = [
@@ -102,21 +57,6 @@ def resolve_content_cluster(
 
 
 def get_cluster_owner(content_cluster_id: str) -> ClusterResolution | None:
-    """
-    Tra lại chủ sở hữu của 1 cụm nội dung ĐÃ BIẾT content_cluster_id.
-
-    Dùng làm fallback trong process_fingerprint() để xác nhận lại chủ sở hữu từ các dòng
-    còn lại trong Milvus — ví dụ ngay sau khi xóa media_id cũ của chính chủ sở hữu (upsert),
-    khi resolve_content_cluster() ở lần gọi kế tiếp cần "nhớ lại" đúng cluster_id đã biết
-    thay vì search lại từ đầu.
-
-    Args:
-        content_cluster_id: ID cụm đã biết từ 1 lần resolve trước đó.
-
-    Returns:
-        ClusterResolution (matched=True) nếu cụm còn dòng "sạch" (is_violation=False), None
-        nếu cụm không còn dòng nào (toàn bộ dòng sạch của cụm đã bị xóa).
-    """
     rows = query_cluster_rows(content_cluster_id, only_non_violation=True)
     if not rows:
         return None
@@ -142,24 +82,11 @@ def _mint_new_cluster(creator_id: str) -> ClusterResolution:
 def _pick_cluster_by_coverage(
     candidates: list[dict], min_match_seconds: int, fps: int
 ) -> dict | None:
-    """
-    Video: gom candidate theo content_cluster_id, chọn cụm có nhiều query frame khớp nhất
-    (coverage). Yêu cầu tối thiểu min_match_seconds (quy đổi theo fps thành số frame) khớp
-    mới coi là "cùng nội dung" — tránh 1-2 frame trùng ngẫu nhiên (ví dụ màu nền giống nhau)
-    bị coi là cùng cụm với cả video. Đây chỉ là gate xác định CỤM/chủ sở hữu — việc tính đoạn
-    vi phạm thật (segment) vẫn do match_segments() ở matcher.py đảm nhiệm, không trùng logic.
-
-    min_match_seconds/fps đọc động 1 lần/job ở process_fingerprint, truyền xuống qua
-    resolve_content_cluster (KHÔNG đọc settings trực tiếp ở đây).
-    """
     by_cluster: dict[str, list[dict]] = {}
     for c in candidates:
         by_cluster.setdefault(c["content_cluster_id"], []).append(c)
 
     min_frames_required = max(1, round(min_match_seconds * fps))
-
-    # coverage = số QUERY FRAME riêng biệt khớp (không phải số candidate — 1 frame có thể
-    # khớp nhiều kết quả top_k cùng 1 cụm, chỉ tính 1 lần).
     cluster_summaries = []
     for members in by_cluster.values():
         coverage = len({m["query_index"] for m in members})
@@ -170,12 +97,6 @@ def _pick_cluster_by_coverage(
 
     if not cluster_summaries:
         return None
-
-    # Ưu tiên coverage cao nhất; nếu HÒA coverage giữa 2+ cụm, tie-break xác định
-    # (deterministic) bằng first_seen_at sớm nhất của đại diện mỗi cụm — giống hệt cách
-    # nhánh ảnh tie-break. Trước đây dùng "if coverage > best_coverage" (strict greater)
-    # giữ nguyên cụm đến trước khi hòa — phụ thuộc thứ tự duyệt dict/kết quả search Milvus,
-    # KHÔNG xác định (có thể ra kết quả khác nhau giữa 2 lần chạy cùng input).
     _, best_representative = min(
         cluster_summaries,
         key=lambda entry: (-entry[0], entry[1]["first_seen_at"], entry[1]["media_id"]),

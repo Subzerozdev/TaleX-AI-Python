@@ -1,11 +1,5 @@
 """
 CRITICAL TEST: Video Moderation Per-Label Config Loading Bug Prevention.
-
-Phát hiện bẫy hiệu năng: nếu get_ai_pipeline_config() được gọi PER-LABEL thay vì
-1 LẦN/JOB, sẽ mở hàng chục kết nối Postgres/job → lỗi hiệu năng nghiêm trọng.
-
-Test này dùng Mock.call_count để kiểm tra get_ai_pipeline_config() được gọi ĐÚNG
-1 LẦN cho 1 media job dù có nhiều label vi phạm.
 """
 
 import pytest

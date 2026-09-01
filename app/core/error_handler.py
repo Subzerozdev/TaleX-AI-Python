@@ -1,9 +1,3 @@
-"""
-Global Error Handler — Catch mọi exception, trả error format thống nhất.
-
-Giống @ControllerAdvice + @ExceptionHandler trong Spring Boot.
-Đảm bảo app KHÔNG BAO GIỜ trả stack trace cho client.
-"""
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse

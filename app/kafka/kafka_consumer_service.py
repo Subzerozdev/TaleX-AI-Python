@@ -49,9 +49,6 @@ async def consume_loop():
         "group_id": settings.KAFKA_CONSUMER_GROUP,
         "value_deserializer": lambda v: json.loads(v.decode("utf-8")),
         "auto_offset_reset": "earliest",
-        # Commit thủ công sau khi xử lý xong (xem bên dưới) — auto-commit theo thời
-        # gian có thể đánh dấu "đã đọc" một job đang xử lý dở, nếu service crash/restart
-        # đúng lúc đó thì job bị mất vĩnh viễn, không retry, không báo lỗi cho BE.
         "enable_auto_commit": False,
         "max_poll_interval_ms": 300000,
     }
@@ -68,18 +65,10 @@ async def consume_loop():
         f"[{TOPIC_PIPELINE_JOB}, {TOPIC_MODERATION_JOB}, {TOPIC_RECOMMENDATION_SYNC}, {TOPIC_MEDIA_DELETE}]"
     )
 
-    # Kết nối TCP tới Aiven Kafka có thể bị NAT/firewall âm thầm cắt khi idle lâu
-    # (không có FIN/RST báo về) — nếu không bọc timeout, await getmany()/commit() có
-    # thể treo VÔ THỜI HẠN (đã xảy ra thật: treo 7+ tiếng, không lỗi, không crash, không
-    # job nào được xử lý tiếp). Bọc timeout cứng để biến "treo im lặng" thành lỗi rõ
-    # ràng, cho phép supervisor bên ngoài (main.py) phát hiện và tự kết nối lại.
     NETWORK_CALL_TIMEOUT_SECONDS = 30
 
     try:
         while True:
-            # Lấy 1 batch message thay vì từng cái — cho phép xử lý song song trong
-            # cùng 1 consumer, tránh episode nhiều trang (100 job Content ID + 100 job
-            # Kiểm duyệt) phải xếp hàng tuần tự dù mỗi job riêng lẻ chỉ mất vài giây.
             batches = await asyncio.wait_for(
                 consumer.getmany(timeout_ms=1000, max_records=10),
                 timeout=NETWORK_CALL_TIMEOUT_SECONDS,
@@ -94,10 +83,6 @@ async def consume_loop():
             ]
             await asyncio.gather(*tasks)
 
-            # Commit sau khi CẢ BATCH xử lý xong (lỗi từng job đã tự gửi error-result
-            # về BE bên trong _dispatch_job, không throw ra đây) — nếu crash giữa batch,
-            # message chưa commit sẽ được Kafka redeliver; các _process_* đều idempotent
-            # (gửi lại cùng 1 kết quả cho BE) nên an toàn khi bị xử lý lại.
             await asyncio.wait_for(consumer.commit(), timeout=NETWORK_CALL_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
         logger.error(
@@ -110,41 +95,12 @@ async def consume_loop():
         logger.info("Kafka consumer stopped")
 
 
-# Giới hạn số job chạy song song cùng lúc (tránh làm quá tải Rekognition/Milvus/S3). Đặt ở
-# module-level để chặn đúng across nhiều batch liền kề, không chỉ trong 1 batch.
-#
-# VIDEO tách semaphore riêng vì mỗi job trích tới FINGERPRINT_MAX_FRAMES=300 frame PNG giữ
-# hết trong RAM cùng lúc (extractor.py) cộng thêm tiến trình FFmpeg riêng — ước tính ~400-
-# 500MB/job, nặng hơn hẳn ảnh — CHƯA kể watermark (encode song song 2 bản HLS/job, xem
-# watermark_service.py) tốn thêm RAM/CPU đáng kể so với lúc con số 8 được chọn ban đầu.
-# Giảm xuống 4 để khớp với trần cpus:4.5 của container (docker-compose.yml) + -threads 2
-# mỗi lệnh ffmpeg encode (4 job × 2 luồng = 8 luồng, vẫn trong tầm kiểm soát của trần CPU,
-# không để 8 job cùng lúc gây context-thrashing dồn dập như trước) và giữ RAM an toàn dưới
-# mem_limit mới (4.5g) — xem docs vận hành nội bộ để biết số đo RAM thật khi cần điều chỉnh
-# lại. Ảnh giữ nguyên 8 vì watermark ảnh (blind_watermark) nhẹ CPU hơn hẳn watermark video.
 _VIDEO_JOB_SEMAPHORE = asyncio.Semaphore(4)
 _IMAGE_JOB_SEMAPHORE = asyncio.Semaphore(8)
 
-# Debounce cho _process_debezium_series: đã ghi nhận thực tế 1 series bị CDC gửi lại
-# event upsert liên tục nhiều lần/phút (nguyên nhân sâu xa nằm ở tầng Debezium/Kafka
-# Connect, chưa xác định được cụ thể) — mỗi lần trigger cả 1 vòng "symmetric update"
-# cho tới 10 series liên quan (xem _process_debezium_series), nhân tác động lên nhiều
-# lần. Guard này chặn xử lý lại CÙNG 1 series quá gần nhau, không phụ thuộc vào việc
-# tìm ra nguyên nhân CDC gửi lặp — an toàn vì service chỉ chạy 1 instance duy nhất.
 _SERIES_UPSERT_DEBOUNCE_SECONDS = 30
 _last_series_upsert_at: dict[str, float] = {}
 
-# consume_loop() dùng asyncio.gather() đợi TOÀN BỘ job trong 1 batch xong mới commit() rồi
-# mới getmany() batch tiếp — nếu 1 job treo vô thời hạn (mạng chập chờn khi gọi S3/Rekognition,
-# hay gặp khi test qua mạng nhà thay vì mạng data center), cả batch bị kẹt theo, các job khác
-# (dù đã sẵn sàng xử lý) phải xếp hàng chờ — quan sát thấy thật: khoảng cách giữa các job giãn
-# dần rồi dồn cục khi test 30 ảnh. Timeout này ép 1 job hung phải thất bại rõ ràng (gửi lỗi về
-# BE để retry) thay vì treo mãi, không chặn các job khác trong cùng batch.
-#
-# VIDEO cần timeout riêng, DÀI HƠN — với FINGERPRINT_MAX_FRAMES=300, trích frame (ffmpeg tự
-# cho tới 120s, xem extractor.py) + hash + insert/search Milvus cho từng đó frame có thể mất
-# hơn 60s một cách HỢP LỆ, không phải bị treo. Dùng chung 1 timeout cho ảnh lẫn video sẽ báo
-# lỗi oan cho video hợp lệ (job "timeout" trong khi ffmpeg bên dưới vẫn đang chạy đúng).
 _JOB_PROCESSING_TIMEOUT_SECONDS = 300
 _VIDEO_JOB_PROCESSING_TIMEOUT_SECONDS = 1200
 
@@ -186,14 +142,13 @@ def _moderation_error_result(media_id: str, correlation_id: str, error_message: 
 
 
 async def _send_hung_job_error_result(msg, timeout_used: int):
-    """Job bị timeout — gửi kết quả lỗi về BE bằng dữ liệu thô từ msg.value, vì handler thật
-    (đã bị hủy do timeout) chưa kịp validate/trả về gì."""
+    """The job timed out—an error result was sent to the backend using raw data from `msg.value`, because the actual handler (which had been cancelled due to the timeout) did not have time to validate or return anything."""
     data = msg.value
     media_id = data.get("mediaId")
     if not media_id:
         return
     correlation_id = data.get("correlationId") or ""
-    error_message = f"Job xử lý quá {timeout_used}s — có thể do mạng treo khi gọi S3/Rekognition"
+    error_message = f"That's a massive workload {timeout_used}s — It might be due to a network hang when calling S3/Rekognition."
     if msg.topic == TOPIC_PIPELINE_JOB:
         await send_copyright_result(media_id, _copyright_error_result(media_id, correlation_id, error_message))
     elif msg.topic == TOPIC_MODERATION_JOB:
@@ -201,8 +156,8 @@ async def _send_hung_job_error_result(msg, timeout_used: int):
 
 
 async def _dispatch_job(msg):
-    """Route 1 Kafka message tới handler tương ứng, giới hạn concurrency bằng semaphore
-    riêng cho video/ảnh (xem giải thích ở khai báo _VIDEO_JOB_SEMAPHORE/_IMAGE_JOB_SEMAPHORE)."""
+    """Route 1 Kafka message to the corresponding handler, limiting concurrency using a semaphore
+       specifically for video/image (see explanation in the _VIDEO_JOB_SEMAPHORE/_IMAGE_JOB_SEMAPHORE declaration)"""
     is_video = isinstance(msg.value, dict) and msg.value.get("mediaType") == "VIDEO"
     job_semaphore = _VIDEO_JOB_SEMAPHORE if is_video else _IMAGE_JOB_SEMAPHORE
     async with job_semaphore:
@@ -228,9 +183,6 @@ async def _process_pipeline_job(data: dict):
     try:
         job = PipelineJobMessage.model_validate(data)
     except Exception as e:
-        # Message sai schema (vd thiếu field bắt buộc) — phải gửi lỗi về BE ngay ở đây,
-        # nếu không throw ra ngoài sẽ bị _dispatch_job() nuốt mất, BE không bao giờ nhận
-        # được kết quả, media kẹt vĩnh viễn ở trạng thái đang xử lý.
         logger.error(f"Invalid pipeline job message: {e}")
         media_id = data.get("mediaId")
         if media_id:
@@ -239,20 +191,11 @@ async def _process_pipeline_job(data: dict):
                 _copyright_error_result(media_id, data.get("correlationId") or "", f"Invalid job message: {e}"),
             )
         else:
-            # Không có mediaId để gửi kết quả lỗi về — job này biến mất hoàn toàn phía BE,
-            # chỉ tự phục hồi sau 10 phút nhờ ContentPipelineReconciler. Log ERROR kèm raw
-            # message để còn có dấu vết tra cứu/cảnh báo được.
             logger.error(f"Dropping malformed pipeline message, no mediaId — cannot route result. raw={_safe_dump(data)}")
         return
     logger.info(f"Processing pipeline job: mediaId={job.media_id}, type={job.media_type}")
 
     try:
-        # Blocking S3/CPU work — run in a thread so it doesn't stall the event loop
-        # and starve the Kafka consumer's heartbeat, which causes session timeouts
-        # and endless redelivery of the same message.
-        # max_bytes chặn NGAY tại HeadObject, trước khi .read() cả file vào RAM — không có
-        # cap này, 1 object quá khổ (bug config, hoặc key S3 bị thao túng) x 8 job chạy
-        # song song đủ để OOM cả service.
         file_bytes = await asyncio.to_thread(download_from_s3, job.s3_key, job.s3_bucket, MAX_FILE_SIZE)
         filename = job.s3_key.rsplit("/", 1)[-1] if "/" in job.s3_key else job.s3_key
 
@@ -271,9 +214,7 @@ async def _process_pipeline_job(data: dict):
 
         if not mod_result.get("isSafe"):
             logger.warning(f"Media {job.media_id} failed moderation. Continuing pipeline so manual review has watermark/preview.")
-            # Chú ý: KHÔNG `return` ở đây nữa!
-            # Nếu return sớm, khi Admin duyệt tay (manual approve), file sẽ không có Watermark và Preview.
-            # Cứ để pipeline chạy hết, BE sẽ tự dùng kết quả moderation để set trạng thái INACTIVE.
+            
 
         # 3. Nhúng watermark (IMAGE: blind_watermark, VIDEO: A/B HLS)
         try:
@@ -329,7 +270,7 @@ async def _process_pipeline_job(data: dict):
                 )
         except Exception as pe:
             logger.error(f"Failed to generate preview for {job.media_id}: {pe}")
-            # We don't fail the entire job if preview fails
+            
 
         # Build camelCase result for Spring Boot
         result = {
@@ -399,31 +340,23 @@ async def _process_debezium_series(data: dict):
                 new_sim = await asyncio.to_thread(recalculate_series, n_id)
                 await send_recommendation_result(n_id, new_sim, action="UPSERT")
             return
-            
         if op == "u" or op == "r":
             after = payload.get("after")
             if not after:
-                return
-                
+                return           
             series_id = after.get("series_id") or after.get("id")
             title = after.get("title", "")
             description = after.get("description", "")
             status = after.get("status", "")
-            is_deleted = after.get("is_deleted", False)
-            
-            # Treat specific statuses or is_deleted as Deletion
+            is_deleted = after.get("is_deleted", False)                   
             if is_deleted or status in ["DELETED", "DRAFT", "HIDDEN", "FORCE_HIDDEN"]:
                 logger.info(f"Processing Deletion for series_id={series_id} due to status={status}, is_deleted={is_deleted}")
                 neighbors = await asyncio.to_thread(process_series_deletion, str(series_id))
                 await send_recommendation_result(str(series_id), [], action="DELETE")
-                
-                # Symmetric update for old neighbors
                 for n_id in neighbors:
                     new_sim = await asyncio.to_thread(recalculate_series, n_id)
                     await send_recommendation_result(n_id, new_sim, action="UPSERT")
                 return
-                
-            # Process Upsert only for valid active statuses
             if status in ["PUBLISHED", "SCHEDULED"]:
                 now = time.monotonic()
                 last_at = _last_series_upsert_at.get(series_id)
@@ -444,8 +377,6 @@ async def _process_debezium_series(data: dict):
                 
                 similar_ids = await asyncio.to_thread(process_series_upsert, str(series_id), title, description, categories, tags, age_rating, language)
                 await send_recommendation_result(str(series_id), similar_ids, action="UPSERT")
-                
-                # Symmetric update for new neighbors
                 for n_id in similar_ids:
                     new_sim = await asyncio.to_thread(recalculate_series, n_id)
                     await send_recommendation_result(n_id, new_sim, action="UPSERT")
@@ -461,8 +392,6 @@ async def _process_moderation_job(data: dict):
     try:
         job = PipelineJobMessage.model_validate(data)
     except Exception as e:
-        # Xem giải thích ở _process_pipeline_job() — không được để lỗi validate văng ra
-        # ngoài, nếu không job mất tích vĩnh viễn, BE không bao giờ nhận được kết quả.
         logger.error(f"Invalid moderation job message: {e}")
         media_id = data.get("mediaId")
         if media_id:
@@ -476,10 +405,6 @@ async def _process_moderation_job(data: dict):
     logger.info(f"Processing moderation job: mediaId={job.media_id}, type={job.media_type}")
 
     try:
-        # Blocking S3/Rekognition work — run in a thread, same reasoning as the
-        # copyright pipeline (avoid starving the Kafka consumer's heartbeat). Đường kiểm
-        # duyệt này trước đây KHÔNG có giới hạn dung lượng nào (chỉ process_fingerprint
-        # mới check) — thêm cap giống hệt đường bản quyền để tránh OOM.
         file_bytes = await asyncio.to_thread(download_from_s3, job.s3_key, job.s3_bucket, MAX_FILE_SIZE)
         result = await asyncio.to_thread(
             moderate_media, file_bytes, job.media_type, job.media_id, job.correlation_id

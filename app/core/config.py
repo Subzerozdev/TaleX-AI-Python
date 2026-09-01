@@ -42,39 +42,15 @@ class Settings:
     # Milvus (Vector DB cho Content ID fingerprint)
     MILVUS_HOST: str = os.getenv("MILVUS_HOST", "localhost")
     MILVUS_PORT: int = int(os.getenv("MILVUS_PORT", "19530"))
-
     # Fingerprint
     FINGERPRINT_FPS: int = int(os.getenv("FINGERPRINT_FPS", "1"))
-    # 0.90 thay vì 0.85 mặc định — tranh vẽ (màu phẳng, nét đơn giản) dễ bị pHash coi
-    # là "giống nhau" hơn ảnh chụp thật dù nội dung khác hẳn, cần ngưỡng chặt hơn để
-    # giảm false positive (rủi ro chấp nhận được vì giờ đã route qua Staff review,
-    # không còn tự động chặn cứng — xem ContentPipelineServiceImpl.handleCopyrightResult).
     FINGERPRINT_SIMILARITY_THRESHOLD: float = float(os.getenv("FINGERPRINT_SIMILARITY_THRESHOLD", "0.90"))
-    # Ngưỡng riêng cho "đây có phải CÙNG 1 nội dung" (gán chủ sở hữu cụm) — CHẶT HƠN ngưỡng
-    # vi phạm ở trên (0.90), vì gán nhầm 2 tác phẩm khác nhau vào chung 1 chủ sở hữu (merge
-    # nhầm cụm) là lỗi nghiêm trọng hơn nhiều so với bỏ sót 1 vi phạm — bỏ sót vẫn còn Staff
-    # review sau, gán nhầm chủ sở hữu thì im lặng chặn luôn quyền báo vi phạm về sau.
     FINGERPRINT_CLUSTER_THRESHOLD: float = float(os.getenv("FINGERPRINT_CLUSTER_THRESHOLD", "0.95"))
     FINGERPRINT_MIN_MATCH_SECONDS: int = int(os.getenv("FINGERPRINT_MIN_MATCH_SECONDS", "5"))
     FINGERPRINT_MAX_GAP_SECONDS: int = int(os.getenv("FINGERPRINT_MAX_GAP_SECONDS", "2"))
     FINGERPRINT_MAX_FILE_SIZE_MB: int = int(os.getenv("FINGERPRINT_MAX_FILE_SIZE_MB", "100"))
-    # Ảnh chỉ có ĐÚNG 1 vector truy vấn (khác video có tới hàng trăm frame), nên top_k thấp
-    # (như video dùng =3) giới hạn cả mạng lưới chỉ còn tối đa 3 ứng viên — nếu 1 kẻ đạo nội
-    # dung đăng lại cùng ảnh ở 3+ tài khoản khác, nguồn gốc thật có thể bị đẩy khỏi top_k.
-    # Ảnh rẻ hơn video nhiều (1 vector vs tới 300) nên mở rộng top_k riêng cho ảnh không tốn kém.
     FINGERPRINT_IMAGE_TOP_K: int = int(os.getenv("FINGERPRINT_IMAGE_TOP_K", "20"))
-    # top_k=3 cho video từng bị lệch thật: 1 nội dung test bị upload/xóa/upload lại nhiều
-    # lần (fingerprint CŨ không bao giờ bị dọn, giữ mãi có chủ đích) tạo ra hàng loạt vector
-    # gần-như-giống-hệt nhau, chiếm hết 3 "suất" top_k, đẩy văng media ĐANG SỐNG THẬT ra
-    # khỏi kết quả — Java nhận về source_media_id không tồn tại (media test cũ), hiển thị
-    # "Unknown, có thể đã bị xóa" dù nguồn thật vẫn còn nguyên. Tăng lên đủ rộng để nguồn
-    # thật vẫn có chỗ chen vào dù có nhiều bản trùng cũ cạnh tranh.
     FINGERPRINT_VIDEO_TOP_K: int = int(os.getenv("FINGERPRINT_VIDEO_TOP_K", "15"))
-    # Giới hạn tổng số frame trích xuất để tạo fingerprint — không có cap này, video dài
-    # (vd 1 tiếng) ở FPS mặc định sinh ra hàng nghìn frame, mỗi frame là 1 vector Milvus,
-    # làm chậm xử lý và phình dữ liệu không cần thiết. Giống REKOGNITION_MAX_FRAMES bên
-    # kiểm duyệt nhưng nhiều hơn — fingerprint cần rải đều khắp video để bắt đúng đoạn
-    # trùng, không chỉ lấy mẫu để phân loại như kiểm duyệt.
     FINGERPRINT_MAX_FRAMES: int = int(os.getenv("FINGERPRINT_MAX_FRAMES", "300"))
 
     # Kafka (Aiven)
@@ -83,8 +59,6 @@ class Settings:
     KAFKA_SSL_CERTFILE: str = os.getenv("KAFKA_SSL_CERTFILE", "")
     KAFKA_SSL_KEYFILE: str = os.getenv("KAFKA_SSL_KEYFILE", "")
     KAFKA_CONSUMER_GROUP: str = os.getenv("KAFKA_CONSUMER_GROUP", "python-content-pipeline-group")
-    # Cho phép local dev dùng topic riêng (vd "-local"), tách biệt hoàn toàn khỏi VPS dùng
-    # chung 1 cụm Kafka Aiven — mặc định rỗng nên VPS không cần đổi gì.
     KAFKA_TOPIC_SUFFIX: str = os.getenv("KAFKA_TOPIC_SUFFIX", "")
 
     # AWS S3 + Rekognition
@@ -95,11 +69,6 @@ class Settings:
 
     # Rekognition Content Moderation
     REKOGNITION_CONFIDENCE_THRESHOLD: float = float(os.getenv("REKOGNITION_CONFIDENCE_THRESHOLD", "80.0"))
-    # Ngưỡng riêng, THẤP HƠN, cho nhóm Violence/Visually Disturbing — Rekognition tự phân
-    # loại nội dung Animated/Illustrated khác ảnh chụp thật (xem docs AWS), dấu hiệu bạo lực
-    # (máu, vết thương, vũ khí) trên tranh vẽ manga/manhwa bị cách điệu hóa nên confidence
-    # thường thấp hơn hẳn so với ảnh thật — dùng chung ngưỡng 80% với Nudity/Suggestive
-    # (vẫn rõ nét dù là tranh vẽ) khiến nội dung bạo lực lọt qua kiểm duyệt.
     REKOGNITION_VIOLENCE_CONFIDENCE_THRESHOLD: float = float(
         os.getenv("REKOGNITION_VIOLENCE_CONFIDENCE_THRESHOLD", "60.0"))
     REKOGNITION_MAX_FRAMES: int = int(os.getenv("REKOGNITION_MAX_FRAMES", "30"))

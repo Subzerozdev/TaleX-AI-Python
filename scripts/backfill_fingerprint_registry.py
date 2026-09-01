@@ -1,35 +1,5 @@
 """
 Backfill Fingerprint Registry — migrate `talex_fingerprints_v3` → `_v4`.
-
-Vấn đề: v4 thêm 4 field "sổ đăng ký chủ sở hữu nội dung gốc" (content_cluster_id,
-original_creator_id, first_seen_at, is_violation — xem app/fingerprint/milvus_store.py) mà
-~1912 dòng dữ liệu cũ trong v3 KHÔNG có. Script này BẮT BUỘC phải chạy trước khi coi migration
-v3 → v4 là hoàn tất — không được bỏ dữ liệu cũ (quyết định của user, xem plan phase-01).
-
-Thuật toán (tóm tắt, chi tiết xem plan phase-01 "Backfill Strategy"):
-  1. Đọc TOÀN BỘ dòng v3 (query_iterator, không load 1 lần cả collection).
-  2. Gom cụm greedy single-pass theo thứ tự `id` tăng dần (proxy cho thứ tự insert — Milvus
-     không lưu insert timestamp thật), dùng ĐÚNG ngưỡng Hamming similarity
-     FINGERPRINT_CLUSTER_THRESHOLD (0.95) như resolve_content_cluster() ở
-     app/fingerprint/content_ownership.py — không phải luật riêng.
-  3. Mỗi cụm: chủ sở hữu = dòng có `id` NHỎ NHẤT (proxy sớm nhất). Các dòng còn lại trong cụm
-     → is_violation=True (bản sao theo mô hình mới).
-  4. first_seen_at = thời điểm CHẠY SCRIPT (epoch giây) cho mọi dòng — không có timestamp
-     lịch sử thật, dùng "now" đồng loạt để không bịa đặt độ chính xác giả.
-  5. Insert lại TẤT CẢ dòng v3 (không bỏ, không gộp) vào v4 kèm 4 field derived ở trên.
-
-QUAN TRỌNG — giới hạn đã biết (xem Risk Assessment trong plan phase-01): dùng `id` tự tăng của
-Milvus làm proxy thứ tự upload là XẤP XỈ, không phải đảm bảo tuyệt đối. Chỉ ảnh hưởng ~1912
-dòng legacy này (upload MỚI sau khi cutover sang v4 dùng first_seen_at thật, không qua script
-này). Thuật toán gom cụm là single-pass greedy O(n*k), đủ dùng ở n≈1912 — nếu n lớn hơn nhiều
-trước khi chạy lại script này, cần đánh giá lại (union-find pairwise đầy đủ), không nên chạy
-mù thuật toán này ở quy mô rất lớn.
-
-Cách chạy:
-  python scripts/backfill_fingerprint_registry.py            # incremental (an toàn, bỏ qua
-                                                               # media_id đã có trong v4)
-  python scripts/backfill_fingerprint_registry.py --fresh    # xóa v4 hiện có, tạo lại từ đầu
-                                                               # (dùng khi phát triển/test lại)
 """
 
 import argparse
@@ -118,11 +88,6 @@ def _cluster_rows(rows: list[dict]) -> list[list[dict]]:
 def _existing_v4_media_to_cluster() -> dict[str, str]:
     """
     media_id -> content_cluster_id đã có sẵn trong v4 — dùng cho chế độ incremental.
-
-    Trả cả cluster_id (không chỉ tập media_id) để nếu 1 cụm bị backfill DỞ DANG ở lần chạy
-    trước (crash giữa chừng), lần chạy lại có thể TÁI SỬ DỤNG đúng content_cluster_id đã
-    gán cho các thành viên đã insert, thay vì mint uuid mới cho phần còn lại — tránh 1 cụm
-    nội dung bị TÁCH thành 2 content_cluster_id khác nhau giữa các thành viên của chính nó.
     """
     v4 = milvus_store.get_collection()
     rows = v4.query(expr='media_id != ""', output_fields=["media_id", "content_cluster_id"])
@@ -159,9 +124,6 @@ def run_backfill(fresh: bool) -> None:
     skipped_count = 0
 
     for members in clusters:
-        # Nếu BẤT KỲ thành viên nào của cụm này đã có trong v4 từ lần chạy trước (crash giữa
-        # chừng) — tái sử dụng ĐÚNG content_cluster_id đã gán, không mint uuid mới. Nếu chưa
-        # ai trong cụm được insert (lần chạy đầu, hoặc cụm hoàn toàn mới), mint như bình thường.
         reused_cluster_id = next(
             (existing_media_to_cluster[row["media_id"]] for row in members if row["media_id"] in existing_media_to_cluster),
             None,

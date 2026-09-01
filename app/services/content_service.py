@@ -1,9 +1,4 @@
-"""
-Content Service — Auto-tagging video bằng Gemini.
 
-Creator upload video → Spring Boot gọi endpoint này → AI phân tích
-title + description → gợi ý tags, mood, age_rating.
-"""
 
 from loguru import logger
 

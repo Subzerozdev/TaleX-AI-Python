@@ -1,14 +1,4 @@
-"""
-Chat Service — Xử lý logic chatbot (RAG pipeline đầy đủ).
 
-Luồng:
-  1. ChromaDB tìm video liên quan (Retrieval)
-  2. Ghép prompt với context (Augmented)
-  3. Gemini sinh reply (Generation)
-  4. Parse response → trả về
-
-Fallback: Gemini lỗi → trả kết quả ChromaDB + reply cố định.
-"""
 
 from loguru import logger
 

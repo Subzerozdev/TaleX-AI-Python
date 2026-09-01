@@ -1,9 +1,4 @@
-"""
-Sync Service — Đồng bộ video data từ Spring Boot vào ChromaDB.
 
-Khi Creator upload/sửa/xóa video trên Spring Boot:
-  Spring Boot gọi POST /api/v1/sync → AI Service nhận → cập nhật ChromaDB.
-"""
 
 from loguru import logger
 
@@ -13,19 +8,11 @@ from app.schemas.sync import SyncRequest, SyncResponse
 
 
 def _build_document(request: SyncRequest) -> str:
-    """Ghép title + description + tags thành 1 đoạn text để embedding."""
     return f"{request.title}. {request.description}. Tags: {', '.join(request.tags)}"
 
 
 def sync_video(request: SyncRequest) -> SyncResponse:
-    """
-    Đồng bộ 1 video vào ChromaDB.
 
-    3 actions:
-      - create: thêm video mới (chuyển text → vector → lưu ChromaDB)
-      - update: cập nhật video (upsert — ghi đè vector cũ)
-      - delete: xóa video khỏi ChromaDB
-    """
     logger.info(f"Sync: video_id={request.video_id}, action={request.action}")
 
     try:
@@ -37,8 +24,6 @@ def sync_video(request: SyncRequest) -> SyncResponse:
                 action="deleted",
                 message=f"Video {request.video_id} đã xóa khỏi ChromaDB.",
             )
-
-        # create hoặc update → cùng logic (upsert)
         document = _build_document(request)
         embedding = embed_text(document)
 

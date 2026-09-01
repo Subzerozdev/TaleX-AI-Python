@@ -1,10 +1,4 @@
-"""Video/Image moderation via AWS Rekognition frame sampling.
 
-For VIDEO: extract frames (1/2s, max 30) in a single ffmpeg pass, then call
-DetectModerationLabels on all frames in parallel (thread pool — Rekognition
-client is blocking/sync). For IMAGE: single DetectModerationLabels call.
-Cost: ~$0.001/frame = ~$0.03 per video (30 frames max).
-"""
 
 import io
 import json
@@ -20,25 +14,14 @@ from PIL import Image
 from app.aws.rekognition_client import detect_moderation_labels
 from app.core.dynamic_config import get_ai_pipeline_config
 
-# Cố tình hạ concurrency xuống 2 và thêm sleep để tránh lỗi ProvisionedThroughputExceededException
 _REKOGNITION_MAX_CONCURRENCY = 2
 
-# AWS Rekognition DetectModerationLabels từ chối ảnh có cạnh nào > 10000px
-# (ImageTooLargeException) — comic dạng webtoon/long-strip (cuộn dọc, cao gấp
-# nhiều lần chiều rộng, VD 720x10825) vượt ngưỡng này thường xuyên. Chừa margin
-# an toàn (9900 thay vì đúng 10000) để tránh lỗi làm tròn khi resize.
 _REKOGNITION_MAX_DIMENSION = 9900
 
-# Nhóm L1 taxonomy dùng ngưỡng confidence riêng (thấp hơn) — xem giải thích ở
-# REKOGNITION_VIOLENCE_CONFIDENCE_THRESHOLD trong config.py.
 _LOWER_THRESHOLD_CATEGORIES = {"Violence", "Visually Disturbing"}
 
 
 def _threshold_for_label(label: dict, config: dict) -> float:
-    # config đọc 1 lần/job ở moderate_media (dynamic_config) rồi truyền xuống — KHÔNG
-    # gọi get_ai_pipeline_config() ở đây vì hàm này chạy per-label (hàng chục lần/job).
-    # parent_name rỗng khi label CHÍNH LÀ danh mục gốc (L1, vd trả thẳng "Violence" không
-    # qua label con) — phải tự kiểm cả label["name"] trong trường hợp đó, không chỉ parent_name.
     if label.get("parent_name") in _LOWER_THRESHOLD_CATEGORIES or label.get("name") in _LOWER_THRESHOLD_CATEGORIES:
         return config["rekognition_violence_confidence_threshold"]
     return config["rekognition_confidence_threshold"]
@@ -47,8 +30,6 @@ def _threshold_for_label(label: dict, config: dict) -> float:
 def moderate_media(file_bytes: bytes, media_type: str, media_id: str, correlation_id: str) -> dict:
     """Run content moderation. Returns camelCase dict for Kafka."""
     try:
-        # Đọc ngưỡng động 1 LẦN/job rồi truyền xuống — Postgres lỗi/chưa có row thì
-        # dynamic_config tự fallback về default config.py (không raise, không crash).
         config = get_ai_pipeline_config()
         if media_type == "IMAGE":
             violations, raw_responses = _moderate_image(file_bytes, config)
@@ -92,24 +73,11 @@ def moderate_media(file_bytes: bytes, media_type: str, media_id: str, correlatio
 
 
 def _normalize_for_rekognition(file_bytes: bytes) -> bytes:
-    """Re-encode upload as baseline RGB JPEG before calling Rekognition.
-
-    Rekognition only accepts JPEG/PNG and rejects WEBP/BMP/CMYK-JPEG with
-    InvalidImageFormatException — but the upload whitelist (IMAGE_EXTENSIONS
-    in fingerprint_service.py) allows WEBP/BMP/JFIF for fingerprinting, which
-    Pillow reads fine regardless of format. Re-encoding here closes that gap
-    without restricting what creators can upload.
-    """
     try:
         image = Image.open(io.BytesIO(file_bytes))
         if image.mode != "RGB":
             image = image.convert("RGB")
 
-        # Comic dạng long-strip/webtoon (cuộn dọc, cao gấp nhiều lần chiều rộng)
-        # thường vượt giới hạn cạnh dài nhất 10000px của Rekognition
-        # (ImageTooLargeException, gặp thật với ảnh 720x10825). Giảm tỉ lệ theo
-        # đúng aspect ratio trước khi gửi — moderation chỉ cần nhận diện nội
-        # dung, không cần độ phân giải gốc.
         if max(image.size) > _REKOGNITION_MAX_DIMENSION:
             image.thumbnail(
                 (_REKOGNITION_MAX_DIMENSION, _REKOGNITION_MAX_DIMENSION),
@@ -180,10 +148,6 @@ def _moderate_video(file_bytes: bytes, config: dict) -> tuple[list[dict], list]:
 def _extract_moderation_frames(
     video_bytes: bytes, config: dict
 ) -> list[tuple[float, bytes]]:
-    """Extract up to rekognition_max_frames frames in a SINGLE ffmpeg pass
-    (previously spawned 1 ffmpeg process per frame — 30x process/seek overhead).
-
-    config đọc động 1 lần/job ở moderate_media, truyền xuống (KHÔNG đọc settings ở đây)."""
     base_interval = config["moderation_frame_interval"]
     max_frames = config["rekognition_max_frames"]
 
@@ -196,9 +160,6 @@ def _extract_moderation_frames(
         duration = _get_video_duration(tmp_path)
         if duration <= 0:
             return []
-
-        # Video dài hơn base_interval * max_frames -> dãn khoảng cách ra để rải đều
-        # frame khắp video (giữ đúng hành vi cũ), thay vì chỉ lấy được đoạn đầu.
         effective_interval = max(base_interval, duration / max_frames)
 
         extract_result = subprocess.run(

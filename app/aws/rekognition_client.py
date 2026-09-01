@@ -6,10 +6,6 @@ from loguru import logger
 from app.core.config import settings
 
 _rek_client = None
-
-# Xem giải thích chi tiết ở s3_client.py — timeout job-level (asyncio.wait_for) không ép
-# dừng được thread thật, nên rút ngắn timeout boto3 để request tự bỏ cuộc nhanh hơn,
-# tránh thread "mắc kẹt" chiếm thread pool dùng chung nhiều phút sau khi job đã timeout.
 _BOTO_CONFIG = Config(connect_timeout=10, read_timeout=20, retries={"max_attempts": 2, "mode": "standard"})
 
 

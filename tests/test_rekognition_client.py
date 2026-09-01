@@ -1,11 +1,4 @@
 """Unit tests for app/aws/rekognition_client.py — response normalization.
-
-detect_moderation_labels() gọi thẳng boto3 Rekognition, response thô AWS trả về là
-{"ModerationLabels": [{"Name": ..., "Confidence": ..., "ParentName": ...}]} (key hoa,
-camelCase kiểu AWS) — hàm này chuẩn hóa thành list[{"name", "confidence", "parent_name"}]
-key thường mà toàn bộ code downstream (video_moderation_service.py) dùng. Test này verify
-ĐÚNG phép biến đổi shape đó, việc từng bị mock che mất hoàn toàn ở mọi test khác (mock
-ngay tại boundary detect_moderation_labels, không bao giờ chạy qua logic thật bên trong).
 """
 from unittest.mock import MagicMock, patch
 

@@ -1,8 +1,5 @@
 """Unit tests for app/aws/s3_client.py — download/upload, MAX_FILE_SIZE cap.
 
-download_from_s3() với max_bytes chặn NGAY tại HeadObject (metadata rẻ, không tải body) —
-đây là lưới an toàn OOM cho kafka_consumer_service.py khi nhiều job lớn chạy song song.
-Test kỹ đường cap này vì nó silent-fail rất nguy hiểm nếu bị phá vỡ (OOM cả service).
 """
 import tempfile
 from unittest.mock import MagicMock, patch

@@ -1,14 +1,4 @@
-"""Unit tests for app/kafka/kafka_consumer_service.py — entrypoint thật nhận Kafka message
-từ Spring Boot, dispatch tới fingerprint/moderation/delete/debezium handler.
-
-Dự án CHƯA cài pytest-asyncio (kiểm tra requirements.txt xác nhận) — để không thêm
-dependency mới ngoài phạm vi yêu cầu, mọi coroutine ở đây được chạy qua asyncio.run()
-thuần bên trong hàm test đồng bộ (def test_x(), không phải async def test_x()), đây là
-cách chuẩn không cần thư viện ngoài.
-
-KHÔNG test consume_loop() — mock toàn bộ vòng đời AIOKafkaConsumer (start/getmany/commit/
-stop) cho 1 vòng lặp vô hạn là bài test tích hợp thật sự, không phải unit test, giá trị
-thu được không tương xứng độ phức tạp phải mock.
+"""Unit tests for app/kafka/kafka_consumer_service.py
 """
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch

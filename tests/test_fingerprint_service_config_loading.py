@@ -1,10 +1,5 @@
 """
 Test fingerprint_service.process_fingerprint() config loading pattern.
-
-Kiểm tra:
-1. Config được đọc ĐÚNG 1 LẦN/job (não ai_config = get_ai_pipeline_config() ở đầu)
-2. Config được truyền xuống resolve_content_cluster() và _find_violations()
-3. KHÔNG gọi DB trong vòng lặp xử lý frames/segments
 """
 
 import pytest

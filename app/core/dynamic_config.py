@@ -1,13 +1,3 @@
-"""
-Đọc động các ngưỡng AI pipeline từ Postgres (bảng ai_pipeline_configs do Admin
-chỉnh qua UI). Mỗi lần gọi mở connection → query → đóng (KHÔNG cache): job pipeline
-không phải hot-path high-QPS nên luôn lấy giá trị mới nhất tại thời điểm xử lý.
-
-Nếu DB không kết nối được, hoặc bảng chưa có row nào (Admin/Java chưa từng tạo),
-trả về giá trị default lấy thẳng từ settings (config.py) và log warning — KHÔNG
-raise, để pipeline không bao giờ crash chỉ vì tầng config động lỗi. Postgres độc
-lập với service Java nên đường đọc này không phụ thuộc Java còn sống hay không.
-"""
 
 import logging
 import os
@@ -58,16 +48,8 @@ def _defaults() -> dict:
 
 
 def get_ai_pipeline_config() -> dict:
-    """
-    Trả dict 13 tham số AI pipeline (cùng shape ở mọi nhánh — caller không cần null-check).
-
-    GỌI 1 LẦN Ở ĐẦU MỖI JOB rồi truyền dict xuống, KHÔNG gọi trong vòng lặp/per-label
-    (mỗi lần gọi mở 1 connection Postgres).
-    """
     conn = None
     try:
-        # Đúng pattern kết nối đã dùng ở recommendation.py — đọc DB creds từ .env
-        # (workflow deploy đã ghi sẵn DB_* vào .env trên VPS).
         conn = psycopg2.connect(
             host=os.getenv("DB_HOST"),
             port=os.getenv("DB_PORT"),

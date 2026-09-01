@@ -9,48 +9,21 @@ services:
     build: .
     ports:
       - "8000:8000"
-    # VPS nâng cấp lên 8GB RAM / 6 core (từ 5.8GB / 4 core) chia cho nhiều service (BE+
-    # Postgres+QuestDB, AI+Milvus). Ưu tiên tốc độ xử lý watermark/kiểm duyệt/bản quyền —
-    # nâng trần lên 4.5g. Con số này CHƯA tính peak RAM thật của tính năng Blind Watermark
-    # (encode song song 2 bản HLS/video) — cần đo lại dưới tải 4 video cùng lúc trước khi
-    # coi là an toàn lâu dài (xem docs vận hành nội bộ). Vẫn giữ trần (không bỏ hẳn) để nếu
-    # có vượt, chỉ container này bị Docker tự kill + tự restart (restart: unless-stopped),
-    # không kéo sập các container khác trên cùng VPS.
     mem_limit: 4500m
-    # 6 core tổng — ưu tiên tốc độ xử lý watermark cho AI-Python (4.5/6), phần còn lại
-    # (1.5 core) chia cho BE (ưu tiên 1.0 vì phục vụ traffic user trực tiếp) + Milvus +
-    # Postgres + QuestDB. Đánh đổi có chủ đích: các service kia chạy trần khá mỏng, nếu
-    # thấy chậm (vd. Milvus search timeout) thì nới Milvus trước, không đụng vào phần BE.
     cpus: 4.5
     env_file:
       - .env
     environment:
-      # Log theo giờ Việt Nam thay vì UTC mặc định của container — dễ đối chiếu log
-      # lúc test local với thời điểm thao tác thật trên FE.
       - TZ=Asia/Ho_Chi_Minh
-      # Override for Docker internal networking
       - MILVUS_HOST=milvus
     volumes:
-      # Mount source code → sửa code không cần rebuild
       - .:/app
-      # Giữ ChromaDB data khi restart
       - chroma_data:/app/chroma_data
-      # Giữ logs
       - app_logs:/app/logs
-    # Cert Kafka (ca.pem/service.cert/service.key) được deploy.yml ghi thẳng ra thư mục
-    # certs/ trên host TRƯỚC khi container chạy (giống cách BE làm) — không nhét PEM
-    # dài vào .env để Docker Compose tự parse, vì .env parser của Compose không xử lý
-    # nổi value dài chứa \n (đã gặp lỗi thật: "unexpected character in variable name").
-    # certs/ được mount qua volume .:/app nên container thấy file ngay, không cần
-    # entrypoint tự ghi lại.
     depends_on:
       milvus:
         condition: service_healthy
     restart: unless-stopped
-    # Cho consumer đủ thời gian gửi LeaveGroup sạch tới Aiven Kafka trước khi bị kill —
-    # thiếu cái này, mỗi lần restart/deploy container cũ thành "zombie member" còn giữ
-    # quyền sở hữu partition tới khi hết session timeout, khiến message rơi vào đúng
-    # partition đó bị treo chờ rebalance (đã gặp thật lúc test local, xem docs debug).
     stop_grace_period: 20s
 
   # === Container 2: Milvus Vector Database ===
@@ -59,10 +32,6 @@ services:
     ports:
       - "19530:19530"
       - "9091:9091"
-    # Trước đây KHÔNG giới hạn, dựa vào phần dư của các container khác — trên VPS 6 core/
-    # 8GB mới, đặt trần rõ ràng để Milvus không thể chiếm hết CPU/RAM còn lại khi AI-Python
-    # đang xử lý nặng. Trần khá mỏng theo chủ đích (ưu tiên AI-Python) — nếu search
-    # fingerprint bị chậm/timeout, đây là chỗ đầu tiên cần nới thêm.
     mem_limit: 600m
     cpus: 0.25
     environment:

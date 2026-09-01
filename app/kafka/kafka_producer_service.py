@@ -11,11 +11,6 @@ from app.core.config import settings
 from app.kafka.kafka_config import TOPIC_COPYRIGHT_RESULT, TOPIC_MODERATION_RESULT, TOPIC_RECOMMENDATION_RESULT
 _producer: AIOKafkaProducer | None = None
 
-# _dispatch_job() (kafka_consumer_service.py) đã bọc timeout quanh xử lý "đường vui", nhưng
-# nhánh dự phòng gửi lỗi (timeout/exception handler) gọi lại đúng 2 hàm dưới đây — nếu
-# nguyên nhân treo thật sự là CHÍNH producer này (không phải S3/Rekognition), các lần gọi
-# gửi lỗi đó sẽ không có gì bảo vệ, có thể treo vĩnh viễn. Bọc timeout ngay tại nguồn để
-# an toàn với MỌI nơi gọi, không cần sửa từng call site.
 _SEND_TIMEOUT_SECONDS = 15
 
 

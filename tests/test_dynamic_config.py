@@ -1,11 +1,5 @@
 """
 Test suite cho app/core/dynamic_config.py — đọc cấu hình AI pipeline động từ Postgres.
-
-Kiểm tra:
-1. Đọc thành công từ DB khi có data
-2. Fallback về default khi DB lỗi (connection refused, timeout)
-3. Fallback về default khi bảng rỗng (chưa có row)
-4. Trả về dict đúng shape
 """
 
 import pytest

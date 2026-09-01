@@ -1,16 +1,4 @@
 """Unit tests for the DETERMINISTIC pure-logic helpers inside watermark_service.py.
-
-watermark_service.py phần lớn là orchestration ffmpeg/OpenCV/pytesseract thật (embed_image_
-watermark, embed_video_audio_watermark, embed_ab_watermark_hls, extract_ab_watermark_hls,
-extract_image_watermark) — mock hết các lệnh subprocess/cv2 cho những hàm đó sẽ chỉ verify
-"có gọi subprocess" chứ không verify đúng kết quả xử lý tín hiệu/hình ảnh thật, giá trị test
-gần như bằng 0. CỐ Ý KHÔNG test các hàm đó ở đây.
-
-Chỉ test các hàm con thuần túy/deterministic, không cần ffmpeg/OpenCV:
-- _pad_id_v2 / _string_to_binary / _binary_to_string: string logic thuần
-- _generate_ultrasound_wav + _extract_ook_from_audio: encode/decode OOK roundtrip THẬT
-  (dùng đúng hàm production, không mock) — chỉ cần scipy.io.wavfile (đã có sẵn dependency),
-  không cần ffmpeg.
 """
 import numpy as np
 import pytest

@@ -2,8 +2,6 @@
 
 from app.core.config import settings
 
-# KAFKA_TOPIC_SUFFIX cho phép local dev dùng topic riêng (vd "-local"), tách biệt hoàn toàn
-# khỏi VPS dùng chung 1 cụm Kafka Aiven — mặc định rỗng nên VPS không cần đổi gì.
 _SUFFIX = settings.KAFKA_TOPIC_SUFFIX
 
 TOPIC_PIPELINE_JOB = "content-pipeline-job" + _SUFFIX
