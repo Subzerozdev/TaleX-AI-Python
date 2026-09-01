@@ -289,18 +289,18 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
             # Output 1: Version A (Có watermark)
             "-map", "[v_wm]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", "veryfast",
-            "-force_key_frames", "expr:gte(t,n_forced*4)",
-            "-g", "120", "-sc_threshold", "0",
+            "-force_key_frames", "expr:gte(t,n_forced*2)",
+            "-g", "60", "-sc_threshold", "0",
             "-c:a", "aac", "-b:a", "128k",
-            "-hls_time", "4", "-hls_playlist_type", "vod",
+            "-hls_time", "2", "-hls_playlist_type", "vod",
             "-f", "hls", os.path.join(dir_a, "playlist.m3u8"),
             # Output 2: Version B (Clean)
             "-map", "[v_clean]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", "veryfast",
-            "-force_key_frames", "expr:gte(t,n_forced*4)",
-            "-g", "120", "-sc_threshold", "0",
+            "-force_key_frames", "expr:gte(t,n_forced*2)",
+            "-g", "60", "-sc_threshold", "0",
             "-c:a", "aac", "-b:a", "128k",
-            "-hls_time", "4", "-hls_playlist_type", "vod",
+            "-hls_time", "2", "-hls_playlist_type", "vod",
             "-f", "hls", os.path.join(dir_b, "playlist.m3u8"),
         ]
 
@@ -416,12 +416,10 @@ def extract_ab_watermark_hls(video_bytes: bytes) -> dict:
     
     binary_str = ""
     try:
-        # 1. Trích xuất frames: 1 frame mỗi 4 giây (fps=1/4)
-        # Bắt đầu lấy từ giây thứ 2 (để né cảnh chuyển mờ đầu chunk)
-        # Nhưng fps=1/4 sẽ tự động chia đều.
+        # 1. Trích xuất frames: 1 frame mỗi 2 giây (fps=1/2) để khớp SEGMENT_DURATION = 2s
         cmd = [
             ffmpeg_bin, "-y", "-i", tmp_video_in.name,
-            "-vf", "fps=1/4", "-q:v", "2",
+            "-vf", "fps=1/2", "-q:v", "2",
             os.path.join(tmp_dir, "frame_%04d.jpg")
         ]
         subprocess.run(cmd, capture_output=True)
@@ -429,8 +427,8 @@ def extract_ab_watermark_hls(video_bytes: bytes) -> dict:
         # Lấy danh sách các frame đã xuất (sắp xếp theo thời gian)
         frames = sorted(glob.glob(os.path.join(tmp_dir, "frame_*.jpg")))
         
-        # Chỉ quét tối đa 32 frames (tương đương 32 bits = 2 phút) để tránh timeout API
-        frames_to_scan = frames[:32]
+        # Quét tối đa 64 frames (tương đương 64 bits = 128 giây) để bao phủ đầy đủ chuỗi nhị phân
+        frames_to_scan = frames[:64]
         
         if not frames_to_scan:
             return {"creator_id": None, "viewer_id": None}
