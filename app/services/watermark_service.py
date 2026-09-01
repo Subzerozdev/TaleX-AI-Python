@@ -291,10 +291,6 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
             "-hls_segment_filename", os.path.join(dir_a, "chunk_%05d.ts"),
             "-f", "hls", os.path.join(dir_a, "playlist.m3u8"),
         ]
-        logger.info("Đang encode Version A HLS (Watermarked)...")
-        res_a = subprocess.run(cmd_a, capture_output=True)
-        if res_a.returncode != 0:
-            raise RuntimeError(f"FFmpeg Version A failed: {res_a.stderr.decode('utf-8', errors='replace')}")
 
         # Pass 2: Tạo Version B (Bản Clean)
         cmd_b = [
@@ -309,10 +305,22 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
             "-hls_segment_filename", os.path.join(dir_b, "chunk_%05d.ts"),
             "-f", "hls", os.path.join(dir_b, "playlist.m3u8"),
         ]
-        logger.info("Đang encode Version B HLS (Clean)...")
-        res_b = subprocess.run(cmd_b, capture_output=True)
-        if res_b.returncode != 0:
-            raise RuntimeError(f"FFmpeg Version B failed: {res_b.stderr.decode('utf-8', errors='replace')}")
+
+        # Chạy song song (Parallel) cả 2 tiến trình FFmpeg A và B cùng một lúc
+        import concurrent.futures
+
+        def _run_ffmpeg_task(cmd, version_name):
+            logger.info(f"Đang encode {version_name} HLS song song...")
+            res = subprocess.run(cmd, capture_output=True)
+            if res.returncode != 0:
+                raise RuntimeError(f"FFmpeg {version_name} failed: {res.stderr.decode('utf-8', errors='replace')}")
+            return res
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            future_a = executor.submit(_run_ffmpeg_task, cmd_a, "Version A")
+            future_b = executor.submit(_run_ffmpeg_task, cmd_b, "Version B")
+            future_a.result()
+            future_b.result()
             
     except Exception as e:
         logger.error(f"Lỗi khi chạy A/B HLS: {e}")
