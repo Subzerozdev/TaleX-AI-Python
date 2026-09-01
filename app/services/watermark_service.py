@@ -293,6 +293,9 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
             "-g", "60", "-sc_threshold", "0",
             "-c:a", "aac", "-b:a", "128k",
             "-hls_time", "2", "-hls_playlist_type", "vod",
+            "-hls_list_size", "0",
+            "-hls_flags", "independent_segments",
+            "-hls_segment_filename", os.path.join(dir_a, "chunk_%05d.ts"),
             "-f", "hls", os.path.join(dir_a, "playlist.m3u8"),
             # Output 2: Version B (Clean)
             "-map", "[v_clean]", "-map", "0:a?",
@@ -301,6 +304,9 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
             "-g", "60", "-sc_threshold", "0",
             "-c:a", "aac", "-b:a", "128k",
             "-hls_time", "2", "-hls_playlist_type", "vod",
+            "-hls_list_size", "0",
+            "-hls_flags", "independent_segments",
+            "-hls_segment_filename", os.path.join(dir_b, "chunk_%05d.ts"),
             "-f", "hls", os.path.join(dir_b, "playlist.m3u8"),
         ]
 
