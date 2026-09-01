@@ -277,18 +277,10 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
     ffmpeg_bin = _get_ffmpeg_path()
     
     try:
-        # Lệnh FFmpeg xuất đồng thời cả Version A và Version B trong 1 lần decode:
-        # 1. split=2 tách luồng video decode thành 2 nhánh: [v_clean] và [v_mark_in]
-        # 2. [v_mark_in] đi qua drawbox vẽ marker magenta 8x8px tạo ra [v_wm]
-        # 3. [v_wm] + audio được encode HLS vào dir_a (Version A)
-        # 4. [v_clean] + audio được encode HLS vào dir_b (Version B)
-        # 5. Dùng prev_forced_t+2 để từng luồng độc lập tự ép keyframe chính xác mỗi 2s mà không xung đột biến n_forced
-        cmd = [
+        # Pass 1: Tạo Version A (Có watermark marker magenta ở góc trên phải)
+        cmd_a = [
             ffmpeg_bin, "-y", "-i", tmp_video_in.name,
-            "-filter_complex", "[0:v]split=2[v_clean][v_mark_in];[v_mark_in]drawbox=x=iw-20:y=20:w=8:h=8:color=magenta@1.0:t=fill[v_wm]",
-            "-threads", "4",
-            # Output 1: Version A (Có watermark)
-            "-map", "[v_wm]", "-map", "0:a?",
+            "-vf", "drawbox=x=iw-20:y=20:w=8:h=8:color=magenta@1.0:t=fill",
             "-c:v", "libx264", "-preset", "veryfast",
             "-force_key_frames", "expr:gte(t,n_forced*2)",
             "-g", "60", "-sc_threshold", "0",
@@ -298,8 +290,15 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
             "-hls_flags", "independent_segments",
             "-hls_segment_filename", os.path.join(dir_a, "chunk_%05d.ts"),
             "-f", "hls", os.path.join(dir_a, "playlist.m3u8"),
-            # Output 2: Version B (Clean)
-            "-map", "[v_clean]", "-map", "0:a?",
+        ]
+        logger.info("Đang encode Version A HLS (Watermarked)...")
+        res_a = subprocess.run(cmd_a, capture_output=True)
+        if res_a.returncode != 0:
+            raise RuntimeError(f"FFmpeg Version A failed: {res_a.stderr.decode('utf-8', errors='replace')}")
+
+        # Pass 2: Tạo Version B (Bản Clean)
+        cmd_b = [
+            ffmpeg_bin, "-y", "-i", tmp_video_in.name,
             "-c:v", "libx264", "-preset", "veryfast",
             "-force_key_frames", "expr:gte(t,n_forced*2)",
             "-g", "60", "-sc_threshold", "0",
@@ -310,17 +309,17 @@ def embed_ab_watermark_hls(video_bytes: bytes, output_dir: str):
             "-hls_segment_filename", os.path.join(dir_b, "chunk_%05d.ts"),
             "-f", "hls", os.path.join(dir_b, "playlist.m3u8"),
         ]
-
-        logger.info("Đang render đồng thời Version A & Version B HLS (single-pass)...")
-        res = subprocess.run(cmd, capture_output=True)
-        if res.returncode != 0:
-            raise RuntimeError(f"FFmpeg A/B HLS failed: {res.stderr.decode('utf-8', errors='replace')}")
+        logger.info("Đang encode Version B HLS (Clean)...")
+        res_b = subprocess.run(cmd_b, capture_output=True)
+        if res_b.returncode != 0:
+            raise RuntimeError(f"FFmpeg Version B failed: {res_b.stderr.decode('utf-8', errors='replace')}")
             
     except Exception as e:
         logger.error(f"Lỗi khi chạy A/B HLS: {e}")
         raise e
     finally:
-        if os.path.exists(tmp_video_in.name): os.remove(tmp_video_in.name)
+        if os.path.exists(tmp_video_in.name): 
+            os.remove(tmp_video_in.name)
 
 def _binary_to_string(binary_str: str) -> str:
     """Chuyển chuỗi bit sang string (ví dụ '01000001' -> 'A')."""
